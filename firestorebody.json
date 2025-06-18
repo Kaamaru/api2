@@ -1,0 +1,63 @@
+{
+  "fields": {
+    "email": { "stringValue": "arnatsigma@gmail.com" },
+
+    "savedrecipes": {
+      "mapValue": {
+        "fields": {
+          "pizza_deluxe": {
+            "mapValue": {
+              "fields": {
+                "ingredients": {
+                  "arrayValue": {
+                    "values": [
+                      { "stringValue": "cheese" },
+                      { "stringValue": "tomato" },
+                      { "stringValue": "dough" }
+                    ]
+                  }
+                },
+                "steps": {
+                  "arrayValue": {
+                    "values": [
+                      { "stringValue": "Roll dough" },
+                      { "stringValue": "Add toppings" },
+                      { "stringValue": "Bake" }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "schedules": {
+      "mapValue": {
+        "fields": {
+          "item1": {
+            "mapValue": {
+              "fields": {
+                "date": { "stringValue": "2025-06-01" },
+                "name": { "stringValue": "milk" },
+                "time": { "stringValue": "10-00" }
+              }
+            }
+          },
+          "item2": {
+            "mapValue": {
+              "fields": {
+                "date": { "stringValue": "2025-06-01" },
+                "name": { "stringValue": "protein" },
+                "time": { "stringValue": "10-30" }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "username": { "stringValue": "Arnat" }
+  }
+}

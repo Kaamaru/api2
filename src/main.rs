@@ -4,30 +4,54 @@ use axum::{
     Router,
 };
 
-mod tasks {
-    pub mod basic;
-    pub mod keycrypt;
-    pub mod firestore;
+// main.rs or lib.rs
+
+mod firebase;
+mod parse;
+
+mod structures {
+    pub mod models;
+    pub mod structs;
 }
 
-pub mod structs;
-pub mod firebase;
+mod tasks {
+    pub mod basic;
+    pub mod firestore;
+    pub mod gemini;
+}
 
-use crate::{firebase::firestore_url, tasks::*};
+mod tools {
+    pub mod imagebb;
+    pub mod keycrypt;
+}
+
+use crate::{
+    firebase::firestore_url,
+    tasks::{basic, firestore},
+    tools::{imagebb, keycrypt},
+};
+
 use basic::{handle_get, handle_post};
-use keycrypt::keycrypt;
-use firestore::{handle_get_data};
 use firebase::FirebaseConfig;
+use firestore::{handle_get_data, handle_get_feedback_devread, handle_post_feedback};
+use imagebb::upload_to_imgbb;
+use keycrypt::keycrypt;
 
 #[tokio::main]
 async fn main() {
-    println!("{}",firestore_url());  
+    println!("{}", firestore_url());
     keycrypt();
+
+    let feedbacks_routes = Router::new()
+        .route("/", post(handle_post_feedback))
+        .route("/devread/{uuid}", get(handle_get_feedback_devread));
+
     let app = Router::new()
         .route("/", get(handle_get).post(handle_post))
-        .route("/data",get(handle_get_data) );
-
-    let listener = tokio::net::TcpListener::bind("localhost:3000")
+        .route("/data", get(handle_get_data))
+        .route("/echo", get(async move || "Echo!"))
+        .nest("/feedbacks", feedbacks_routes);
+    let listener = tokio::net::TcpListener::bind("localhost:4444")
         .await
         .unwrap();
     axum::serve(listener, app).await.unwrap();

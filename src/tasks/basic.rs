@@ -6,8 +6,8 @@ use axum::{
 };
 
 use crate::{
-    structs::{TheRequest, TheResponse},
-    tasks::keycrypt::checkvalid,
+    structures::structs::{TheRequest, TheResponse},
+    tools::keycrypt::checkvalid,
 };
 use serde::{Deserialize, Serialize};
 

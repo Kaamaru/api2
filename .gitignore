@@ -1,4 +1,4 @@
-
+/src/firebase.rs
 /target
 .shuttle*
 Secrets*.toml

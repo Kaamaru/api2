@@ -10,7 +10,6 @@ pub struct TheResponse {
     pub text: String,
 }
 
-
 #[derive(Serialize, Deserialize, Debug)]
 pub struct FirestoreStringField {
     pub stringValue: String,
@@ -25,4 +24,59 @@ pub struct FeedbackFields {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct FeedbackDocument {
     pub fields: FeedbackFields,
+}
+// For schedule reading
+use std::collections::HashMap;
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct FirestoreUserResponse {
+    pub documents: Vec<FirestoreUserDocument>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct FirestoreUserDocument {
+    pub fields: Option<UserFields>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct UserFields {
+    pub email: Option<FirestoreStringField>,
+    pub schedules: Option<FirestoreMapField>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct FirestoreMapField {
+    #[serde(rename = "mapValue")]
+    pub map_value: FirestoreInnerMap,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct FirestoreInnerMap {
+    pub fields: HashMap<String, FirestoreScheduleItem>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct FirestoreScheduleItem {
+    #[serde(rename = "mapValue")]
+    pub map_value: FirestoreScheduleMap,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct FirestoreScheduleMap {
+    pub fields: FirestoreScheduleDetail,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct FirestoreScheduleDetail {
+    pub name: FirestoreStringField,
+    pub time: FirestoreStringField,
+    pub date: FirestoreStringField,
+}
+
+#[derive(Debug, Clone)]
+pub struct Schedule {
+    pub name: String,
+    pub time: String,
+    pub date: String,
+    pub is_soon: bool,
 }

@@ -42,6 +42,7 @@ pub struct FirestoreUserDocument {
 pub struct UserFields {
     pub email: Option<FirestoreStringField>,
     pub schedules: Option<FirestoreMapField>,
+    pub savedrecipes: Option<FirestoreMapField>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -79,4 +80,22 @@ pub struct Schedule {
     pub time: String,
     pub date: String,
     pub is_soon: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct RecipeField {
+    pub name: FirestoreStringField,
+    pub ingredients: FirestoreArrayField,
+    pub steps: FirestoreArrayField,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct FirestoreArrayField {
+    #[serde(rename = "arrayValue")]
+    pub array_value: Option<FirestoreArrayValues>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct FirestoreArrayValues {
+    pub values: Vec<FirestoreStringField>,
 }

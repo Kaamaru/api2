@@ -11,6 +11,7 @@ mod parse;
 mod structures {
     pub mod models;
     pub mod structs;
+    pub mod webstructs;
 }
 
 mod tasks {
@@ -30,7 +31,7 @@ use crate::{
     firebase::firestore_url,
     tasks::{
         basic,
-        firestore::{self},
+        firestore::{self, handle_get_user_by_uid, handle_get_user_summary},
         timecheck,
     },
     tools::{imagebb, keycrypt},
@@ -39,7 +40,7 @@ use crate::{
 use basic::{handle_get, handle_post};
 use firebase::FirebaseConfig;
 use firestore::{
-    handle_get_data, handle_get_feedback_devread, firestore_get_users_and_schedules,
+    firestore_get_users_and_schedules, handle_get_data, handle_get_feedback_devread,
     handle_post_feedback,
 };
 use imagebb::upload_to_imgbb;
@@ -61,8 +62,10 @@ async fn main() {
 
     let app = Router::new()
         .route("/", get(handle_get).post(handle_post))
+        .route("/user/{uid}", get(handle_get_user_by_uid))
         .route("/data", get(handle_get_data))
         .route("/echo", get(async move || "Echo!"))
+        .route("/user-summary", get(handle_get_user_summary))
         .route("/checktime", get(firestore_get_users_and_schedules))
         .nest("/feedbacks", feedbacks_routes);
     let listener = tokio::net::TcpListener::bind("localhost:4444")

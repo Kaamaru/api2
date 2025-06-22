@@ -1,8 +1,9 @@
+
+
 use crate::{
     firebase::{self, FirebaseConfig},
     structures::structs::{
-        FeedbackDocument, FeedbackFields, FirestoreScheduleDetail, FirestoreScheduleItem,
-        FirestoreStringField, FirestoreUserResponse, Schedule,
+        FeedbackDocument, FeedbackFields, FirestoreScheduleDetail, FirestoreScheduleItem, FirestoreStringField, FirestoreUserDocument, FirestoreUserResponse, RecipeField, Schedule
     },
 };
 use axum::{
@@ -15,6 +16,7 @@ use axum::{
 use chrono::{Duration, Local, NaiveDate, NaiveDateTime, NaiveTime, TimeZone};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::{collections::HashMap, fmt::format};
 
 use chrono_tz::Asia::Bangkok;
@@ -91,7 +93,7 @@ pub async fn firestore_get_users_and_schedules()
             }
         }
     }
-    
+
     // users_map
 }
 
@@ -182,4 +184,148 @@ pub async fn call_firestore_get_feedback_devread(
     let feedback: FeedbackDocument = serde_json::from_str(&json_text)?;
 
     Ok(feedback)
+}
+
+
+
+pub async fn handle_get_user_by_uid(Path(uid): Path<String>) -> impl IntoResponse {
+    let url = format!("{}/users/{}", crate::firebase::firestore_url(), uid);
+    let resp = reqwest::get(&url).await;
+
+    if let Ok(resp) = resp {
+        if resp.status().is_success() {
+            let body = resp.text().await.unwrap();
+
+            let parsed: FirestoreUserDocument = serde_json::from_str(&body)
+                .unwrap_or_else(|e| {
+                    eprintln!("❌ Failed to parse user doc: {}", e);
+                    FirestoreUserDocument { fields: None }
+                });
+
+            if let Some(fields) = parsed.fields {
+                let mut saved_recipes = Vec::new();
+
+                if let Some(saved) = &fields.savedrecipes {
+                    for (id, recipe_data) in &saved.map_value.fields {
+                        let result: Result<RecipeField, _> = serde_json::from_value(
+                            serde_json::to_value(&recipe_data.map_value.fields).unwrap()
+                        );
+
+                        if let Ok(recipe_fields) = result {
+                            let name = recipe_fields.name.stringValue.clone();
+                            let ingredients = recipe_fields
+                                .ingredients
+                                .array_value
+                                .as_ref()
+                                .map(|a| {
+                                    a.values
+                                        .iter()
+                                        .map(|v| v.stringValue.clone())
+                                        .collect::<Vec<_>>()
+                                })
+                                .unwrap_or_default();
+
+                            let steps = recipe_fields
+                                .steps
+                                .array_value
+                                .as_ref()
+                                .map(|a| {
+                                    a.values
+                                        .iter()
+                                        .map(|v| v.stringValue.clone())
+                                        .collect::<Vec<_>>()
+                                })
+                                .unwrap_or_default();
+
+                            saved_recipes.push(json!({
+                                "id": id,
+                                "name": name,
+                                "ingredients": ingredients,
+                                "steps": steps,
+                            }));
+                        } else {
+                            eprintln!("❌ Failed to parse recipe: {}", id);
+                        }
+                    }
+                }
+
+                return Json(json!({
+                    "email": fields.email.map(|e| e.stringValue).unwrap_or_default(),
+                    "savedrecipes": saved_recipes,
+                }));
+            }
+        } else {
+            eprintln!("⚠️ Firestore responded with status: {}", resp.status());
+        }
+    }
+
+    Json(json!({ "error": "User not found or invalid UID" }))
+}
+
+pub async fn handle_get_user_summary() -> impl IntoResponse {
+    let url = format!("{}/users/HUKkTGyzLHCwyioElWBK", crate::firebase::firestore_url());
+    let resp = reqwest::get(&url).await.expect("Failed to fetch");
+    let body = resp.text().await.expect("Failed to read body");
+
+    let parsed: FirestoreUserResponse =
+        serde_json::from_str(&body).expect("Failed to parse FirestoreUserResponse");
+
+    if let Some(doc) = parsed.documents.first() {
+        if let Some(fields) = &doc.fields {
+            let mut saved_recipes = Vec::new();
+
+            // ✅ Parse savedrecipes
+            if let Some(saved) = &fields.savedrecipes {
+                for (id, recipe_data) in &saved.map_value.fields {
+                    let result: Result<RecipeField, _> = serde_json::from_value(
+                        serde_json::to_value(&recipe_data.map_value.fields).unwrap(),
+                    );
+
+                    if let Ok(recipe_fields) = result {
+                        let name = recipe_fields.name.stringValue.clone();
+                        let ingredients = recipe_fields
+                            .ingredients
+                            .array_value
+                            .as_ref()
+                            .map(|a| {
+                                a.values
+                                    .iter()
+                                    .map(|v| v.stringValue.clone())
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+
+                        let steps = recipe_fields
+                            .steps
+                            .array_value
+                            .as_ref()
+                            .map(|a| {
+                                a.values
+                                    .iter()
+                                    .map(|v| v.stringValue.clone())
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default();
+
+                        saved_recipes.push(json!({
+                            "id": id,
+                            "name": name,
+                            "ingredients": ingredients,
+                            "steps": steps
+                        }));
+                    } else {
+                        eprintln!("❌ Failed to parse recipe: {}", id);
+                    }
+                }
+            }
+
+            return Json(json!({
+                "email": fields.email.as_ref().map(|e| e.stringValue.clone()).unwrap_or_default(),
+                "savedrecipes": saved_recipes
+            }));
+        }
+    }
+
+    // fallback
+    Json(json!({ "error": "No user data found" }))
 }

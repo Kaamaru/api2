@@ -10,7 +10,7 @@ pub struct TheResponse {
     pub text: String,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct FirestoreStringField {
     pub stringValue: String,
 }
@@ -82,20 +82,22 @@ pub struct Schedule {
     pub is_soon: bool,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-pub struct RecipeField {
-    pub name: FirestoreStringField,
-    pub ingredients: FirestoreArrayField,
-    pub steps: FirestoreArrayField,
-}
 
-#[derive(Serialize, Deserialize, Debug)]
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct FirestoreArrayField {
     #[serde(rename = "arrayValue")]
     pub array_value: Option<FirestoreArrayValues>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct FirestoreArrayValues {
     pub values: Vec<FirestoreStringField>,
+}
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct RecipeField {
+    pub name: FirestoreStringField,
+    pub ingredients: FirestoreArrayField,
+    pub steps: FirestoreArrayField,
+    pub time: Option<FirestoreStringField>,
 }

@@ -1,9 +1,10 @@
-
-
 use crate::{
     firebase::{self, FirebaseConfig},
     structures::structs::{
-        FeedbackDocument, FeedbackFields, FirestoreScheduleDetail, FirestoreScheduleItem, FirestoreStringField, FirestoreUserDocument, FirestoreUserResponse, RecipeField, Schedule
+        FeedbackDocument, FeedbackFields, FirestoreMapField, FirestoreRecipeMapField,
+        FirestoreScheduleDetail, FirestoreScheduleItem, FirestoreSingleUserResponse,
+        FirestoreStringField, FirestoreUserDocument, FirestoreUserResponse, Recipe, RecipeField,
+        Schedule, User,
     },
 };
 use axum::{
@@ -20,6 +21,13 @@ use serde_json::json;
 use std::{collections::HashMap, fmt::format};
 
 use chrono_tz::Asia::Bangkok;
+
+pub async fn firestore_change_schedule(){
+    
+}
+pub async fn firestore_change_recipe(){
+    
+}
 
 //
 pub async fn firestore_get_users_and_schedules()
@@ -84,7 +92,7 @@ pub async fn firestore_get_users_and_schedules()
                             name: detail.name.stringValue.clone(),
                             time: detail.time.stringValue.clone(),
                             date: detail.date.stringValue.clone(),
-                            is_soon,
+                            expiry: detail.date.stringValue.clone(),
                         });
                     }
                 }
@@ -186,84 +194,221 @@ pub async fn call_firestore_get_feedback_devread(
     Ok(feedback)
 }
 
-
+// Add this handler function to your firestore.rs file
 
 pub async fn handle_get_user_by_uid(Path(uid): Path<String>) -> impl IntoResponse {
     let url = format!("{}/users/{}", crate::firebase::firestore_url(), uid);
-    let resp = reqwest::get(&url).await;
 
-    if let Ok(resp) = resp {
-        if resp.status().is_success() {
-            let body = resp.text().await.unwrap();
+    // Get access token for authorization
 
-            let parsed: FirestoreUserDocument = serde_json::from_str(&body)
-                .unwrap_or_else(|e| {
-                    eprintln!("❌ Failed to parse user doc: {}", e);
-                    FirestoreUserDocument { fields: None }
-                });
-
-            if let Some(fields) = parsed.fields {
-                let mut saved_recipes = Vec::new();
-
-                if let Some(saved) = &fields.savedrecipes {
-                    for (id, recipe_data) in &saved.map_value.fields {
-                        let result: Result<RecipeField, _> = serde_json::from_value(
-                            serde_json::to_value(&recipe_data.map_value.fields).unwrap()
-                        );
-
-                        if let Ok(recipe_fields) = result {
-                            let name = recipe_fields.name.stringValue.clone();
-                            let ingredients = recipe_fields
-                                .ingredients
-                                .array_value
-                                .as_ref()
-                                .map(|a| {
-                                    a.values
-                                        .iter()
-                                        .map(|v| v.stringValue.clone())
-                                        .collect::<Vec<_>>()
-                                })
-                                .unwrap_or_default();
-
-                            let steps = recipe_fields
-                                .steps
-                                .array_value
-                                .as_ref()
-                                .map(|a| {
-                                    a.values
-                                        .iter()
-                                        .map(|v| v.stringValue.clone())
-                                        .collect::<Vec<_>>()
-                                })
-                                .unwrap_or_default();
-
-                            saved_recipes.push(json!({
-                                "id": id,
-                                "name": name,
-                                "ingredients": ingredients,
-                                "steps": steps,
-                            }));
-                        } else {
-                            eprintln!("❌ Failed to parse recipe: {}", id);
-                        }
-                    }
-                }
-
-                return Json(json!({
-                    "email": fields.email.map(|e| e.stringValue).unwrap_or_default(),
-                    "savedrecipes": saved_recipes,
-                }));
-            }
-        } else {
-            eprintln!("⚠️ Firestore responded with status: {}", resp.status());
+    let client = Client::new();
+    let response = match client.get(&url).send().await {
+        Ok(response) => response,
+        Err(e) => {
+            eprintln!("Failed to fetch user: {}", e);
+            return Json(json!({ "error": "User not found or invalid UID" })).into_response();
         }
+    };
+
+    if !response.status().is_success() {
+        eprintln!("⚠️ Firestore responded with status: {}", response.status());
+        return Json(json!({ "error": "User not found or invalid UID" })).into_response();
     }
 
-    Json(json!({ "error": "User not found or invalid UID" }))
+    let body = match response.text().await {
+        Ok(body) => {
+            println!("{:?}", body);
+            body
+        }
+        Err(e) => {
+            eprintln!("Failed to get response body: {}", e);
+            return Json(json!({ "error": "User not found or invalid UID" })).into_response();
+        }
+    };
+
+    let firestore_response: FirestoreSingleUserResponse = match serde_json::from_str(&body) {
+        Ok(data) => data,
+        Err(e) => {
+            eprintln!("❌ Failed to parse user doc: {}", e);
+            return Json(json!({ "error": "User not found or invalid UID" })).into_response();
+        }
+    };
+
+    // Convert Firestore format to clean format
+    let user = convert_firestore_user_to_clean(firestore_response, &uid);
+
+    // Return JSON response matching your original format
+    Json(json!({
+        "email": user.email.unwrap_or_default(),
+        "username": user.username.unwrap_or_default(),
+        "savedrecipes": user.saved_recipes.into_iter().map(|recipe| json!({
+            "id": recipe.id,
+            "name": recipe.name,
+            "ingredients": recipe.ingredients,
+            "steps": recipe.steps,
+            "time": recipe.time
+        })).collect::<Vec<_>>(),
+        "schedules": user.schedules.into_iter().map(|schedule| json!({
+            "name": schedule.name,
+            "time": schedule.time,
+            "date": schedule.date,
+            "expiry": schedule.expiry
+        })).collect::<Vec<_>>()
+    }))
+    .into_response()
+}
+
+// Helper function to convert Firestore format to clean format
+fn convert_firestore_user_to_clean(firestore_user: FirestoreSingleUserResponse, uid: &str) -> User {
+    let fields = firestore_user.fields;
+
+    // Extract username and email
+    let username = fields.username.map(|u| u.stringValue);
+    let email = fields.email.map(|e| e.stringValue);
+
+    // Convert schedules
+    let schedules = if let Some(schedule_map) = fields.schedules {
+        convert_firestore_schedules_to_clean(schedule_map)
+    } else {
+        Vec::new()
+    };
+
+    // Convert saved recipes
+    let saved_recipes = if let Some(recipe_map) = fields.savedrecipes {
+        convert_firestore_recipes_to_clean(recipe_map)
+    } else {
+        Vec::new()
+    };
+
+    User {
+        username,
+        email,
+        schedules,
+        saved_recipes,
+    }
+}
+
+// Helper function to convert Firestore schedules to clean format
+fn convert_firestore_schedules_to_clean(schedule_map: FirestoreMapField) -> Vec<Schedule> {
+    let mut schedules = Vec::new();
+    let now = Local::now().with_timezone(&Bangkok);
+
+    for (key, schedule_item) in schedule_map.map_value.fields {
+        let schedule_detail = schedule_item.map_value.fields;
+
+        let name = schedule_detail.name.stringValue;
+        let time = schedule_detail.time.stringValue;
+        let date = schedule_detail.date.stringValue;
+        let expiry = schedule_detail.expiry.stringValue;
+
+        // Check if schedule is soon (within next 30 minutes)
+
+        schedules.push(Schedule {
+            name,
+            time,
+            date,
+            expiry,
+        });
+    }
+
+    schedules
+}
+
+// Helper function to convert Firestore recipes to clean format
+fn convert_firestore_recipes_to_clean(recipe_map: FirestoreRecipeMapField) -> Vec<Recipe> {
+    let mut recipes = Vec::new();
+
+    for (recipe_id, recipe_item) in recipe_map.map_value.fields {
+        let recipe_fields = recipe_item.map_value.fields;
+
+        let name = recipe_fields.name.stringValue;
+        let time = recipe_fields.time.map(|t| t.stringValue);
+
+        // Extract ingredients array
+        let ingredients = if let Some(ingredients_field) = recipe_fields.ingredients.array_value {
+            ingredients_field
+                .values
+                .into_iter()
+                .map(|v| v.stringValue)
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        // Extract steps array
+        let steps = if let Some(steps_field) = recipe_fields.steps.array_value {
+            steps_field
+                .values
+                .into_iter()
+                .map(|v| v.stringValue)
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        recipes.push(Recipe {
+            id: recipe_id,
+            name,
+            ingredients,
+            steps,
+            time,
+        });
+    }
+
+    recipes
+}
+
+// Helper function to check if schedule is soon (reuse your existing logic)
+fn check_if_schedule_is_soon(
+    date_str: &str,
+    time_str: &str,
+    now: &chrono::DateTime<chrono_tz::Tz>,
+) -> bool {
+    // Parse the date
+    let schedule_date = match NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
+        Ok(date) => date,
+        Err(_) => return false,
+    };
+
+    // Parse the time (assuming format like "10-00" means "10:00")
+    let time_parts: Vec<&str> = time_str.split('-').collect();
+    if time_parts.len() != 2 {
+        return false;
+    }
+
+    let hour = match time_parts[0].parse::<u32>() {
+        Ok(h) => h,
+        Err(_) => return false,
+    };
+
+    let minute = match time_parts[1].parse::<u32>() {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+
+    let schedule_time = match NaiveTime::from_hms_opt(hour, minute, 0) {
+        Some(time) => time,
+        None => return false,
+    };
+
+    // Combine date and time
+    let schedule_datetime = schedule_date.and_time(schedule_time);
+    let schedule_bangkok = Bangkok.from_local_datetime(&schedule_datetime).single();
+
+    match schedule_bangkok {
+        Some(schedule_tz) => {
+            let diff = schedule_tz - *now;
+            diff <= Duration::minutes(30) && diff >= Duration::zero()
+        }
+        None => false,
+    }
 }
 
 pub async fn handle_get_user_summary() -> impl IntoResponse {
-    let url = format!("{}/users/HUKkTGyzLHCwyioElWBK", crate::firebase::firestore_url());
+    let url = format!(
+        "{}/users/HUKkTGyzLHCwyioElWBK",
+        crate::firebase::firestore_url()
+    );
     let resp = reqwest::get(&url).await.expect("Failed to fetch");
     let body = resp.text().await.expect("Failed to read body");
 

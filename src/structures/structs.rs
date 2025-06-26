@@ -39,13 +39,6 @@ pub struct FirestoreUserDocument {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-pub struct UserFields {
-    pub email: Option<FirestoreStringField>,
-    pub schedules: Option<FirestoreMapField>,
-    pub savedrecipes: Option<FirestoreMapField>,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
 pub struct FirestoreMapField {
     #[serde(rename = "mapValue")]
     pub map_value: FirestoreInnerMap,
@@ -72,17 +65,16 @@ pub struct FirestoreScheduleDetail {
     pub name: FirestoreStringField,
     pub time: FirestoreStringField,
     pub date: FirestoreStringField,
+    pub expiry: FirestoreStringField, // Added expiry field
 }
 
-#[derive(Debug, Clone)]
+#[derive(Serialize, Debug, Clone)]
 pub struct Schedule {
     pub name: String,
     pub time: String,
     pub date: String,
-    pub is_soon: bool,
+    pub expiry: String, // Added expiry field
 }
-
-
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct FirestoreArrayField {
@@ -99,5 +91,75 @@ pub struct RecipeField {
     pub name: FirestoreStringField,
     pub ingredients: FirestoreArrayField,
     pub steps: FirestoreArrayField,
+    #[serde(default)] // <- prevents panic when missing
     pub time: Option<FirestoreStringField>,
+}
+
+// Updated UserFields to include username and better recipe handling
+#[derive(Serialize, Deserialize, Debug)]
+pub struct UserFields {
+    pub email: Option<FirestoreStringField>,
+    pub username: Option<FirestoreStringField>,
+    pub schedules: Option<FirestoreMapField>,
+    pub savedrecipes: Option<FirestoreRecipeMapField>,
+}
+
+// New struct specifically for saved recipes map
+#[derive(Serialize, Deserialize, Debug)]
+pub struct FirestoreRecipeMapField {
+    #[serde(rename = "mapValue")]
+    pub map_value: FirestoreRecipeInnerMap,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct FirestoreRecipeInnerMap {
+    pub fields: HashMap<String, FirestoreRecipeItem>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct FirestoreRecipeItem {
+    #[serde(rename = "mapValue")]
+    pub map_value: FirestoreRecipeMap,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct FirestoreRecipeMap {
+    pub fields: RecipeField,
+}
+
+// Complete user document structure for single document response
+#[derive(Serialize, Deserialize, Debug)]
+pub struct FirestoreSingleUserResponse {
+    pub name: String,
+    pub fields: UserFields,
+    #[serde(rename = "createTime")]
+    pub create_time: String,
+    #[serde(rename = "updateTime")]
+    pub update_time: String,
+}
+
+#[derive(Serialize, Debug, Clone)]
+pub struct Recipe {
+    pub id: String,
+    pub name: String,
+    pub ingredients: Vec<String>,
+    pub steps: Vec<String>,
+    pub time: Option<String>,
+}
+
+// Clean structs for API response
+#[derive(Serialize, Debug)]
+pub struct User {
+    pub username: Option<String>,
+    pub email: Option<String>,
+    pub schedules: Vec<Schedule>,
+    pub saved_recipes: Vec<Recipe>,
+}
+
+#[derive(Serialize)]
+pub struct FirestoreChangeSchedule {
+    pub name: Option<String>,
+    pub time: Option<String>,
+    pub date: Option<String>,
+    pub expiry: Option<String>,
 }

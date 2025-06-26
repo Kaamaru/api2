@@ -8,10 +8,6 @@ pub struct ChatRequest {
     pub prompt_language: String,
 }
 
-#[derive(Serialize)]
-pub struct ChatResponse {
-    pub response: String,
-}
 
 #[derive(Serialize)]
 pub struct GeminiRequest {
@@ -66,4 +62,25 @@ pub struct GeminiResponseContent {
 #[derive(Deserialize)]
 pub struct GeminiResponsePart {
     pub text: String,
+}
+// Alternative: Keep using ChatResponse but with structured data
+#[derive(Serialize)]
+pub struct ChatResponse {
+    #[serde(flatten)]
+    pub data: serde_json::Value,
+}
+
+// Or if you want to be more explicit:
+#[derive(Serialize)]
+pub struct ChatResponseStructured {
+    pub dishes: Vec<Dish>,
+}
+
+#[derive(Serialize)]
+pub struct Dish {
+    #[serde(rename = "dishName")]
+    pub dish_name: String,
+    pub portions: std::collections::HashMap<String, String>,
+    #[serde(rename = "preparationSteps")]
+    pub preparation_steps: Vec<String>,
 }

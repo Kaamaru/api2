@@ -1,3 +1,4 @@
+use crate::firebase::GEMINI_API_KEY;
 use crate::structures::models::{
     ChatRequest, ChatResponse, GeminiContent, GeminiPart, GeminiRequest, GeminiResponse,
     GenerationConfig, SystemInstruction,
@@ -8,8 +9,9 @@ use serde_json::Value;
 
 pub async fn chat_handler(
     Json(payload): Json<ChatRequest>,
-) -> Result<ResponseJson<ChatResponse>, StatusCode> {
-    let api_key = "AIzaSyCycTkqXarUfS1UyIaMi60NC0UqqvJ6BJ4"; // Replace with your actual API key
+) -> Result<ResponseJson<Value>, StatusCode> {
+    // Return Value directly
+    let api_key = GEMINI_API_KEY;
 
     // Extract prompt text
     let prompt_text = match &payload.prompt {
@@ -23,7 +25,7 @@ pub async fn chat_handler(
     };
 
     let system_instruction_text = format!(
-        "You are a highly creative, reliable, and friendly cooking assistant named NekoChef.\n\nYour task is to help users discover delicious meals they can cook using the ingredients they provide.\n\nGiven the following ingredients: {}\n\nSuggest exactly three distinct dishes. Each dish must:\n- Have a clear and appealing \"dishName\".\n- Include a \"preparationSteps\" array, where each item is a single clear step of the recipe.\n- Use common cooking knowledge to make the best use of the given ingredients, even if not all are used in each dish.\n- Be imaginative, yet realistic to prepare in a regular kitchen.\n\nRespond strictly as a JSON object with the following structure:\n\n{{\n  \"dishes\": [\n    {{\n      \"dishName\": \"Dish Title\",\n      \"preparationSteps\": [\n        \"Step 1...\",\n        \"Step 2...\",\n        \"...etc\"\n      ]\n    }},\n    ... 2 more dishes\n  ]\n}}\n\nPlease provide the entire response in the {} language.\nDo **not** include any extra text, commentary, or formatting outside of the JSON object.",
+        "You are a highly creative, reliable, and friendly cooking assistant named NekoChef.\n\nYour task is to help users discover delicious meals they can cook using the ingredients they provide.\n\nGiven the following ingredients: {}\n\nSuggest exactly three distinct dishes. Each dish must:\n- Have a clear and appealing \"dishName\".\n- Include a \"portions\" object with ingredient amounts using appropriate units (grams, milliliters, pieces, tablespoons, teaspoons, cups, etc.).\n- Include a \"preparationSteps\" array, where each item is a single clear step of the recipe.\n- Use common cooking knowledge to make the best use of the given ingredients, even if not all are used in each dish.\n- Be imaginative, yet realistic to prepare in a regular kitchen.\n- Provide realistic portion sizes for 2-3 servings.\n\nRespond strictly as a JSON object with the following structure:\n\n{{\n  \"dishes\": [\n    {{\n      \"dishName\": \"Dish Title\",\n      \"portions\": {{\n        \"ingredient1\": \"amount with unit\",\n        \"ingredient2\": \"amount with unit\",\n        \"oil\": \"2 tablespoons\",\n        \"salt\": \"1 teaspoon\"\n      }},\n      \"preparationSteps\": [\n        \"Step 1...\",\n        \"Step 2...\",\n        \"...etc\"\n      ]\n    }},\n    ... 2 more dishes\n  ]\n}}\n\nPlease provide the entire response in the {} language.\nDo **not** include any extra text, commentary, or formatting outside of the JSON object.",
         prompt_text, payload.prompt_language
     );
 
@@ -91,53 +93,68 @@ pub async fn chat_handler(
         .map(|p| p.text.clone())
         .unwrap_or_else(|| "No response".to_string());
 
+    println!("Raw Gemini response: {}", response_text);
+    println!(
+        "Response starts with ```json: {}",
+        response_text.starts_with("```json")
+    );
+    println!(
+        "Response starts with ```: {}",
+        response_text.starts_with("```")
+    );
+
     // Clean up the response - remove markdown code blocks
-    let cleaned_response = if response_text.starts_with("```json") {
-        response_text
-            .strip_prefix("```json\n")
-            .unwrap_or(&response_text)
-            .strip_suffix("\n```")
-            .unwrap_or(&response_text)
-            .to_string()
-    } else {
-        response_text.clone()
+    let cleaned_response = {
+        let mut text = response_text.trim().to_string();
+
+        // Remove code block markers
+        if text.starts_with("```json") {
+            text = text.strip_prefix("```json").unwrap_or(&text).to_string();
+        } else if text.starts_with("```") {
+            text = text.strip_prefix("```").unwrap_or(&text).to_string();
+        }
+
+        if text.ends_with("```") {
+            text = text.strip_suffix("```").unwrap_or(&text).to_string();
+        }
+
+        // Trim any remaining whitespace
+        text.trim().to_string()
     };
 
-    // Parse and extract dishes for development use
-    let mut dishes_vec: Vec<(String, Vec<String>)> = Vec::new();
-    let mut dish_names: Vec<String> = Vec::new();
-    let mut all_steps: Vec<Vec<String>> = Vec::new();
+    println!("Cleaned response: {}", cleaned_response);
+    println!("Attempting to parse JSON...");
 
-    // Pretty print to terminal
-    if let Ok(parsed_json) = serde_json::from_str::<serde_json::Value>(&cleaned_response) {
+    // Parse the JSON response
+    let parsed_json: Value = serde_json::from_str(&cleaned_response).map_err(|e| {
+        println!("Failed to parse Gemini response as JSON: {}", e);
+        println!("Raw response: {}", response_text);
+        println!("Cleaned response: {}", cleaned_response);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    // Pretty print to terminal (optional - you can remove this if not needed)
+    if let Some(dishes) = parsed_json.get("dishes").and_then(|d| d.as_array()) {
         println!("\n🍳 NekoChef's Recipe Suggestions:");
         println!("================================");
 
-        if let Some(dishes) = parsed_json.get("dishes").and_then(|d| d.as_array()) {
-            for (i, dish) in dishes.iter().enumerate() {
-                if let (Some(name), Some(steps)) = (
-                    dish.get("dishName").and_then(|n| n.as_str()),
-                    dish.get("preparationSteps").and_then(|s| s.as_array()),
-                ) {
-                    // Store dish name
-                    let dish_name = name.to_string();
-                    dish_names.push(dish_name.clone());
+        for (i, dish) in dishes.iter().enumerate() {
+            if let Some(name) = dish.get("dishName").and_then(|n| n.as_str()) {
+                println!("\n{}. 🍽️  {}", i + 1, name);
 
-                    // Store steps
-                    let mut steps_vec: Vec<String> = Vec::new();
-                    for step in steps.iter() {
-                        if let Some(step_text) = step.as_str() {
-                            steps_vec.push(step_text.to_string());
+                // Print portions if available
+                if let Some(portions) = dish.get("portions").and_then(|p| p.as_object()) {
+                    println!("   📏 Ingredients:");
+                    for (ingredient, amount) in portions {
+                        if let Some(amount_str) = amount.as_str() {
+                            println!("   - {}: {}", ingredient, amount_str);
                         }
                     }
-                    all_steps.push(steps_vec.clone());
+                }
 
-                    // Store as tuple (name, steps)
-                    dishes_vec.push((dish_name.clone(), steps_vec));
-
-                    // Print to terminal
-                    println!("\n{}. 🍽️  {}", i + 1, dish_name);
-                    println!("   Steps:");
+                // Print steps
+                if let Some(steps) = dish.get("preparationSteps").and_then(|s| s.as_array()) {
+                    println!("   👨‍🍳 Steps:");
                     for (step_num, step) in steps.iter().enumerate() {
                         if let Some(step_text) = step.as_str() {
                             println!("   {}. {}", step_num + 1, step_text);
@@ -147,21 +164,10 @@ pub async fn chat_handler(
             }
         }
         println!("\n================================");
-
-        // Debug print for development
-        println!("📊 Extracted data for development:");
-        println!("Total dishes: {}", dishes_vec.len());
-        println!("Dish names: {:?}", dish_names);
-        println!(
-            "Steps count per dish: {:?}",
-            all_steps.iter().map(|s| s.len()).collect::<Vec<_>>()
-        );
-        println!();
     }
 
-    Ok(ResponseJson(ChatResponse {
-        response: cleaned_response,
-    }))
+    // Return the parsed JSON directly
+    Ok(ResponseJson(parsed_json))
 }
 pub async fn call_gemini_api(gemini_request: &GeminiRequest) -> Result<String, reqwest::Error> {
     let api_key = std::env::var("GEMINI_API_KEY")

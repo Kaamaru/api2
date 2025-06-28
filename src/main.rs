@@ -34,7 +34,8 @@ use crate::{
     tasks::{
         basic,
         firestore::{self, handle_get_user_by_uid, handle_get_user_summary},
-        gemini, timecheck,
+        gemini::*,
+        timecheck,
     },
     tools::{imagebb, keycrypt},
 };
@@ -45,7 +46,6 @@ use firestore::{
     firestore_change_recipe, firestore_change_schedule, firestore_get_users_and_schedules,
     handle_get_data, handle_get_feedback_devread, handle_post_feedback,
 };
-use gemini::chat_handler;
 use imagebb::upload_to_imgbb;
 use keycrypt::keycrypt;
 use timecheck::timeloop;
@@ -71,7 +71,7 @@ async fn main() {
 
     let app = Router::new()
         .route("/", get(handle_get).post(handle_post))
-        .route("/chat", post(chat_handler))
+        .route("/chat", post(chat_handler_with_retry))
         .route("/user/{uid}", get(handle_get_user_by_uid))
         .route("/data", get(handle_get_data))
         .route("/echo", get(async move || "Echo!"))

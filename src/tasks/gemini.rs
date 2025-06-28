@@ -7,10 +7,89 @@ use axum::{extract::Json, http::StatusCode, response::Json as ResponseJson};
 use reqwest::Client;
 use serde_json::Value;
 
-pub async fn chat_handler(
+
+
+
+pub async fn call_gemini_api(gemini_request: &GeminiRequest) -> Result<String, reqwest::Error> {
+    let api_key = std::env::var("GEMINI_API_KEY")
+        .unwrap_or_else(|_| "AIzaSyCycTkqXarUfS1UyIaMi60NC0UqqvJ6BJ4".to_string());
+
+    let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={}", api_key);
+
+    let client = Client::new();
+
+    let response = client.post(&url).json(gemini_request).send().await?;
+
+    if !response.status().is_success() {
+        let err_text = response.text().await.unwrap_or_default();
+        eprintln!("Gemini API error: {}", err_text);
+        return Ok("API Error".to_string());
+    }
+
+    let gemini_response: GeminiResponse = response.json().await?;
+
+    let response_text = gemini_response
+        .candidates
+        .first()
+        .and_then(|c| c.content.parts.first())
+        .map(|p| p.text.clone())
+        .unwrap_or_else(|| "No response".to_string());
+
+    // Remove markdown code fences if present
+    let cleaned = if response_text.starts_with("```json") {
+        response_text
+            .strip_prefix("```json\n")
+            .unwrap_or(&response_text)
+            .strip_suffix("\n```")
+            .unwrap_or(&response_text)
+            .to_string()
+    } else {
+        response_text
+    };
+
+    Ok(cleaned)
+}
+pub async fn chat_handler_with_retry(
     Json(payload): Json<ChatRequest>,
 ) -> Result<ResponseJson<Value>, StatusCode> {
-    // Return Value directly
+    const MAX_RETRIES: u32 = 2;
+    let mut attempt = 0;
+
+    loop {
+        attempt += 1;
+
+        let result = try_generate_recipes(&payload).await;
+
+        match result {
+            Ok(json) => {
+                // Check if we got complete recipes
+                if let Some(dishes) = json.get("dishes").and_then(|d| d.as_array()) {
+                    if dishes.len() == 3 {
+                        return Ok(ResponseJson(json));
+                    }
+                }
+
+                // If incomplete and we have retries left, try again
+                if attempt < MAX_RETRIES {
+                    println!("Incomplete response, retrying... (attempt {})", attempt + 1);
+                    continue;
+                }
+
+                // Return what we have
+                return Ok(ResponseJson(json));
+            }
+            Err(e) if attempt < MAX_RETRIES => {
+                println!("Request failed, retrying... (attempt {})", attempt + 1);
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+// 2. Separate the generation logic
+async fn try_generate_recipes(payload: &ChatRequest) -> Result<Value, StatusCode> {
+    // ... your existing generation logic here ...
     let api_key = GEMINI_API_KEY;
 
     // Extract prompt text
@@ -34,6 +113,7 @@ pub async fn chat_handler(
         prompt_text, payload.prompt_language
     );
 
+    let output_token_limit = 1024;
     let gemini_request = GeminiRequest {
         system_instruction: Some(SystemInstruction {
             parts: vec![GeminiPart {
@@ -45,10 +125,25 @@ pub async fn chat_handler(
         }],
         generation_config: GenerationConfig {
             temperature: 1.0,
-            max_output_tokens: 800,
+            max_output_tokens: output_token_limit,
             top_p: 0.8,
             top_k: 10,
         },
+    };
+    // Use higher token limit based on ingredients count
+    let ingredient_count = payload
+        .prompt
+        .as_str()
+        .map(|s| s.split(',').count())
+        .unwrap_or(5);
+
+    let token_limit = std::cmp::max(1500, ingredient_count * 200);
+
+    let generation_config = GenerationConfig {
+        temperature: 0.7,
+        max_output_tokens: token_limit as u32,
+        top_p: 0.8,
+        top_k: 40,
     };
 
     let client = Client::new();
@@ -167,44 +262,37 @@ pub async fn chat_handler(
     }
 
     // Return the parsed JSON directly
-    Ok(ResponseJson(parsed_json))
+    Ok(parsed_json)
+
+    // ... rest of logic ...
 }
-pub async fn call_gemini_api(gemini_request: &GeminiRequest) -> Result<String, reqwest::Error> {
-    let api_key = std::env::var("GEMINI_API_KEY")
-        .unwrap_or_else(|_| "AIzaSyCycTkqXarUfS1UyIaMi60NC0UqqvJ6BJ4".to_string());
 
-    let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={}", api_key);
+// 3. Better response validation
+fn validate_recipe_response(json: &Value) -> bool {
+    if let Some(dishes) = json.get("dishes").and_then(|d| d.as_array()) {
+        if dishes.len() != 3 {
+            return false;
+        }
 
-    let client = Client::new();
+        for dish in dishes {
+            // Check required fields
+            if dish.get("dishName").and_then(|n| n.as_str()).is_none() {
+                return false;
+            }
+            if dish.get("portions").and_then(|p| p.as_object()).is_none() {
+                return false;
+            }
+            if dish
+                .get("preparationSteps")
+                .and_then(|s| s.as_array())
+                .is_none()
+            {
+                return false;
+            }
+        }
 
-    let response = client.post(&url).json(gemini_request).send().await?;
-
-    if !response.status().is_success() {
-        let err_text = response.text().await.unwrap_or_default();
-        eprintln!("Gemini API error: {}", err_text);
-        return Ok("API Error".to_string());
+        return true;
     }
 
-    let gemini_response: GeminiResponse = response.json().await?;
-
-    let response_text = gemini_response
-        .candidates
-        .first()
-        .and_then(|c| c.content.parts.first())
-        .map(|p| p.text.clone())
-        .unwrap_or_else(|| "No response".to_string());
-
-    // Remove markdown code fences if present
-    let cleaned = if response_text.starts_with("```json") {
-        response_text
-            .strip_prefix("```json\n")
-            .unwrap_or(&response_text)
-            .strip_suffix("\n```")
-            .unwrap_or(&response_text)
-            .to_string()
-    } else {
-        response_text
-    };
-
-    Ok(cleaned)
+    false
 }

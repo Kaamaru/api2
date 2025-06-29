@@ -22,12 +22,6 @@ use std::{collections::HashMap, fmt::format};
 
 use chrono_tz::Asia::Bangkok;
 
-pub async fn firestore_change_schedule(){
-    
-}
-pub async fn firestore_change_recipe(){
-    
-}
 
 //
 pub async fn firestore_get_users_and_schedules()
@@ -93,6 +87,7 @@ pub async fn firestore_get_users_and_schedules()
                             time: detail.time.stringValue.clone(),
                             date: detail.date.stringValue.clone(),
                             expiry: detail.date.stringValue.clone(),
+                            uid: detail.uid.stringValue.clone(),
                         });
                     }
                 }
@@ -222,15 +217,15 @@ pub async fn handle_get_user_by_uid(Path(uid): Path<String>) -> impl IntoRespons
         }
         Err(e) => {
             eprintln!("Failed to get response body: {}", e);
-            return Json(json!({ "error": "User not found or invalid UID" })).into_response();
+            return Json(json!({ "error": "User not found or invalid UID1" })).into_response();
         }
     };
-
-    let firestore_response: FirestoreSingleUserResponse = match serde_json::from_str(&body) {
+    println!("{}",body);
+    let firestore_response = match serde_json::from_str(&body) {
         Ok(data) => data,
         Err(e) => {
             eprintln!("❌ Failed to parse user doc: {}", e);
-            return Json(json!({ "error": "User not found or invalid UID" })).into_response();
+            return Json(json!({ "error": "User not found or invalid UID2" })).into_response();
         }
     };
 
@@ -242,7 +237,7 @@ pub async fn handle_get_user_by_uid(Path(uid): Path<String>) -> impl IntoRespons
         "email": user.email.unwrap_or_default(),
         "username": user.username.unwrap_or_default(),
         "savedrecipes": user.saved_recipes.into_iter().map(|recipe| json!({
-            "id": recipe.id,
+            "uid": recipe.uid,
             "name": recipe.name,
             "ingredients": recipe.ingredients,
             "steps": recipe.steps,
@@ -252,7 +247,9 @@ pub async fn handle_get_user_by_uid(Path(uid): Path<String>) -> impl IntoRespons
             "name": schedule.name,
             "time": schedule.time,
             "date": schedule.date,
-            "expiry": schedule.expiry
+            "expiry": schedule.expiry,
+            "uid": schedule.uid
+
         })).collect::<Vec<_>>()
     }))
     .into_response()
@@ -300,6 +297,7 @@ fn convert_firestore_schedules_to_clean(schedule_map: FirestoreMapField) -> Vec<
         let time = schedule_detail.time.stringValue;
         let date = schedule_detail.date.stringValue;
         let expiry = schedule_detail.expiry.stringValue;
+        let uid = schedule_detail.uid.stringValue;
 
         // Check if schedule is soon (within next 30 minutes)
 
@@ -308,6 +306,7 @@ fn convert_firestore_schedules_to_clean(schedule_map: FirestoreMapField) -> Vec<
             time,
             date,
             expiry,
+            uid,
         });
     }
 
@@ -345,9 +344,10 @@ fn convert_firestore_recipes_to_clean(recipe_map: FirestoreRecipeMapField) -> Ve
         } else {
             Vec::new()
         };
+        let uid = recipe_fields.uid.stringValue;
 
         recipes.push(Recipe {
-            id: recipe_id,
+            uid: recipe_id,
             name,
             ingredients,
             steps,

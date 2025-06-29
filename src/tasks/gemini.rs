@@ -7,9 +7,6 @@ use axum::{extract::Json, http::StatusCode, response::Json as ResponseJson};
 use reqwest::Client;
 use serde_json::Value;
 
-
-
-
 pub async fn call_gemini_api(gemini_request: &GeminiRequest) -> Result<String, reqwest::Error> {
     let api_key = std::env::var("GEMINI_API_KEY")
         .unwrap_or_else(|_| "AIzaSyCycTkqXarUfS1UyIaMi60NC0UqqvJ6BJ4".to_string());
@@ -113,7 +110,7 @@ async fn try_generate_recipes(payload: &ChatRequest) -> Result<Value, StatusCode
         prompt_text, payload.prompt_language
     );
 
-    let output_token_limit = 1024;
+    let output_token_limit = 1500;
     let gemini_request = GeminiRequest {
         system_instruction: Some(SystemInstruction {
             parts: vec![GeminiPart {
@@ -125,7 +122,7 @@ async fn try_generate_recipes(payload: &ChatRequest) -> Result<Value, StatusCode
         }],
         generation_config: GenerationConfig {
             temperature: 1.0,
-            max_output_tokens: output_token_limit,
+            max_output_tokens: output_token_limit + 500,
             top_p: 0.8,
             top_k: 10,
         },
@@ -296,3 +293,9 @@ fn validate_recipe_response(json: &Value) -> bool {
 
     false
 }
+
+
+
+
+
+

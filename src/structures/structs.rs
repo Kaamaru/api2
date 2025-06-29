@@ -46,6 +46,7 @@ pub struct FirestoreMapField {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct FirestoreInnerMap {
+    #[serde(default)]
     pub fields: HashMap<String, FirestoreScheduleItem>,
 }
 
@@ -65,7 +66,8 @@ pub struct FirestoreScheduleDetail {
     pub name: FirestoreStringField,
     pub time: FirestoreStringField,
     pub date: FirestoreStringField,
-    pub expiry: FirestoreStringField, // Added expiry field
+    pub expiry: FirestoreStringField,
+    pub uid: FirestoreStringField,
 }
 
 #[derive(Serialize, Debug, Clone)]
@@ -74,6 +76,7 @@ pub struct Schedule {
     pub time: String,
     pub date: String,
     pub expiry: String, // Added expiry field
+    pub uid: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -93,6 +96,7 @@ pub struct RecipeField {
     pub steps: FirestoreArrayField,
     #[serde(default)] // <- prevents panic when missing
     pub time: Option<FirestoreStringField>,
+    pub uid: FirestoreStringField,
 }
 
 // Updated UserFields to include username and better recipe handling
@@ -113,6 +117,7 @@ pub struct FirestoreRecipeMapField {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct FirestoreRecipeInnerMap {
+    #[serde(default)]
     pub fields: HashMap<String, FirestoreRecipeItem>,
 }
 
@@ -140,7 +145,7 @@ pub struct FirestoreSingleUserResponse {
 
 #[derive(Serialize, Debug, Clone)]
 pub struct Recipe {
-    pub id: String,
+    pub uid: String,
     pub name: String,
     pub ingredients: Vec<String>,
     pub steps: Vec<String>,
@@ -162,4 +167,19 @@ pub struct FirestoreChangeSchedule {
     pub time: Option<String>,
     pub date: Option<String>,
     pub expiry: Option<String>,
+}
+#[derive(serde::Deserialize)]
+pub struct AddScheduleRequest {
+    pub name: String,
+    pub time: String,
+    pub date: String,
+    pub expiry: String,
+}
+
+#[derive(serde::Deserialize)]
+pub struct AddRecipeRequest {
+    pub name: String,
+    pub ingredients: Vec<String>,
+    pub steps: Vec<String>,
+    pub time: Option<String>,
 }

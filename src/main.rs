@@ -1,6 +1,6 @@
 use axum::{
     http::{HeaderMap, HeaderValue},
-    routing::{get, patch, post},
+    routing::{delete, get, patch, post},
     Router,
 };
 use reqwest::Method;
@@ -33,7 +33,7 @@ use crate::{
     firebase::firestore_url,
     tasks::{
         basic,
-        firestore::{self, handle_get_user_by_uid, handle_get_user_summary},
+        firestore::{firestore::*, modify::*},
         gemini::*,
         timecheck,
     },
@@ -42,10 +42,7 @@ use crate::{
 
 use basic::{handle_get, handle_post};
 use firebase::FirebaseConfig;
-use firestore::{
-    firestore_change_recipe, firestore_change_schedule, firestore_get_users_and_schedules,
-    handle_get_data, handle_get_feedback_devread, handle_post_feedback,
-};
+
 use imagebb::upload_to_imgbb;
 use keycrypt::keycrypt;
 use timecheck::timeloop;
@@ -66,8 +63,30 @@ async fn main() {
         .route("/", post(handle_post_feedback))
         .route("/devread/{uuid}", get(handle_get_feedback_devread));
     let change_datas = Router::new()
-        .route("/schedules/{uuid}", patch(firestore_change_schedule))
-        .route("/recipe/{uuid}", patch(firestore_change_recipe));
+        .route("/", patch(change_get))
+        .route("/schedules/{uuid}", patch(firestore_change_schedule));
+    // .route("/recipe/{uuid}", patch(firestore_change_recipe));
+    let delete_datas = Router::new()
+        .route("/", delete(delete_get))
+        .route(
+            "/schedules/{uuid}/{schedule_key}",
+            delete(firestore_delete_schedule),
+        )
+        .route(
+            "/recipes/{uuid}/{recipe_key}",
+            delete(firestore_delete_recipe),
+        );
+
+    let add_datas = Router::new()
+        .route("/", patch(add_get))
+        .route(
+            "/schedules/{uuid}",
+            patch(firestore_add_schedule),
+        )
+        .route(
+            "/recipes/{uuid}",
+            patch(firestore_add_recipe),
+        );
 
     let app = Router::new()
         .route("/", get(handle_get).post(handle_post))
@@ -79,6 +98,8 @@ async fn main() {
         .route("/checktime", get(firestore_get_users_and_schedules))
         .nest("/feedbacks", feedbacks_routes)
         .nest("/change", change_datas)
+        .nest("/delete", delete_datas)
+        .nest("/add", add_datas)
         .layer(cors);
 
     let listener = tokio::net::TcpListener::bind("localhost:4444")

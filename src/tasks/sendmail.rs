@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::structures::structs::Schedule;
-use crate::tasks::firestore::firestore_get_users_and_schedules;
+use crate::tasks::firestore::firestore::firestore_get_users_and_schedules;
 use crate::{
     firebase::{self, FirebaseConfig},
     structures::structs::{FeedbackDocument, FeedbackFields, FirestoreStringField},

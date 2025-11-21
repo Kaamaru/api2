@@ -1,6 +1,9 @@
-use crate::structures::structs::{AddRecipeRequest, AddScheduleRequest};
+use crate::{
+    structures::structs::{AddRecipeRequest, AddScheduleRequest},
+    FirebaseConfig,
+};
 use axum::{
-    extract::Path,
+    extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Json},
     routing::patch,
@@ -75,16 +78,18 @@ pub async fn add_get() -> String {
 
 pub async fn firestore_add_schedule(
     Path(uuid): Path<String>,
+    State(firebase_config): State<FirebaseConfig>,
     Json(request): Json<AddScheduleRequest>,
 ) -> impl IntoResponse {
     println!("firestore_add_schedule");
 
     let client = Client::new();
 
-    let new_id = format!("schedule_{}",generate_unique_id());
+    let new_id = format!("schedule_{}", generate_unique_id());
     // PATCH URL with updateMask to add schedules.itemX
     let patch_url = format!(
-        "https://firestore.googleapis.com/v1/projects/uringredients/databases/(default)/documents/users/{}?updateMask.fieldPaths=schedules.{}",
+        "{}/users/{}?updateMask.fieldPaths=schedules.{}",
+        firebase_config.firestore_url(),
         uuid,
         new_id
     );
@@ -147,19 +152,21 @@ pub async fn firestore_add_schedule(
     }))
     .into_response()
 }
-
+#[axum::debug_handler]
 pub async fn firestore_add_recipe(
     Path(uuid): Path<String>,
+    State(firebase_config): State<FirebaseConfig>,
     Json(request): Json<AddRecipeRequest>,
 ) -> impl IntoResponse {
     let client = Client::new();
-    let new_id = format!("recipe_{}",generate_unique_id());
+    let new_id = format!("recipe_{}", generate_unique_id());
 
     // PATCH URL with updateMask to add savedrecipes.recipe_name
     let patch_url = format!(
-        "https://firestore.googleapis.com/v1/projects/uringredients/databases/(default)/documents/users/{}?updateMask.fieldPaths=savedrecipes.{}",
-                            uuid,
-                            new_id
+        "{}/users/{}?updateMask.fieldPaths=savedrecipes.{}",
+        firebase_config.firestore_url(),
+        uuid,
+        new_id
     );
 
     // Convert ingredients and steps to Firestore arrayValue format
@@ -254,10 +261,11 @@ pub async fn firestore_add_recipe(
 
 pub async fn firestore_change_schedule(
     Path(uuid): Path<String>,
+    State(firebase_config): State<FirebaseConfig>,
     Json(payload): Json<PatchScheduleRequest>,
 ) -> impl IntoResponse {
     // Update the user document, not a subcollection
-    let url = format!("{}/users/{}", crate::firebase::firestore_url(), uuid);
+    let url = format!("{}/users/{}", firebase_config.firestore_url(), uuid);
     let client = Client::new();
 
     // Build the schedule fields dynamically, only including provided fields
@@ -368,9 +376,10 @@ pub async fn firestore_change_schedule(
 
 pub async fn firestore_delete_schedule(
     Path((uuid, schedule_key)): Path<(String, String)>,
+    State(firebase_config): State<FirebaseConfig>,
 ) -> impl IntoResponse {
     // First, get the current user document to retrieve existing schedules
-    let get_url = format!("{}/users/{}", crate::firebase::firestore_url(), uuid);
+    let get_url = format!("{}/users/{}", firebase_config.firestore_url(), uuid);
     let client = Client::new();
 
     // Get current document
@@ -480,9 +489,10 @@ pub async fn firestore_delete_schedule(
 
 pub async fn firestore_delete_recipe(
     Path((uuid, recipe_key)): Path<(String, String)>,
+    State(firebase_config): State<FirebaseConfig>,
 ) -> impl IntoResponse {
     // First, get the current user document to retrieve existing recipes
-    let get_url = format!("{}/users/{}", crate::firebase::firestore_url(), uuid);
+    let get_url = format!("{}/users/{}", firebase_config.firestore_url(), uuid);
     let client = Client::new();
 
     // Get current document

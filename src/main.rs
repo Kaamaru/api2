@@ -21,6 +21,7 @@ mod tasks {
     pub mod firestore;
     pub mod gemini;
     pub mod sendmail;
+    pub mod hardware;
     pub mod timecheck;
 }
 
@@ -30,33 +31,35 @@ mod tools {
 }
 
 use crate::{
-    firebase::firestore_url,
     tasks::{
         basic,
         firestore::{firestore::*, modify::*},
         gemini::*,
         timecheck,
+        hardware::{device::*},
     },
     tools::{imagebb, keycrypt},
 };
 
 use basic::{handle_get, handle_post};
-use firebase::FirebaseConfig;
 
 use imagebb::upload_to_imgbb;
 use keycrypt::keycrypt;
 use timecheck::timeloop;
 
+pub use firebase::FirebaseConfig;
+
 #[tokio::main]
 async fn main() {
+    let firebase_config = FirebaseConfig::from_env();
     task::spawn(async {
         timeloop().await;
     });
 
-    println!("{}", firestore_url());
+    println!("{}", firebase_config.firestore_url());
     keycrypt();
     let cors = CorsLayer::new()
-        .allow_origin(Any) // You can also use `allow_origin("https://yourfrontend.com".parse().unwrap())`
+        .allow_origin(Any)
         .allow_methods(Any)
         .allow_headers(Any);
     let feedbacks_routes = Router::new()
@@ -88,6 +91,9 @@ async fn main() {
             patch(firestore_add_recipe),
         );
 
+    let hardware = Router::new()
+        .route("/connect", post(connect_device_to_user));
+
     let app = Router::new()
         .route("/", get(handle_get).post(handle_post))
         .route("/chat", post(chat_handler_with_retry))
@@ -100,10 +106,25 @@ async fn main() {
         .nest("/change", change_datas)
         .nest("/delete", delete_datas)
         .nest("/add", add_datas)
-        .layer(cors);
+        .nest("/hardware", hardware)
+        .layer(cors).with_state(firebase_config);
 
     let listener = tokio::net::TcpListener::bind("localhost:4444")
         .await
         .unwrap();
     axum::serve(listener, app).await.unwrap();
+}
+
+use dotenv::dotenv;
+// Access env vars
+pub fn config_env_var(name: &str) -> Result<String, String> {
+    std::env::var(name).map_err(|e| format!("{}: {}", name, e))
+}
+pub fn secrets_setup() {
+    dotenv().ok();
+
+    // Install ring provider for rustls 0.23
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("failed to install default crypto provider");
 }

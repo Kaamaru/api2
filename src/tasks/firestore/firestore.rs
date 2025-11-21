@@ -8,7 +8,7 @@ use crate::{
     },
 };
 use axum::{
-    extract::{Json, Path},
+    extract::{Json, Path, State},
     http::{response, HeaderMap, HeaderName, HeaderValue, StatusCode},
     response::IntoResponse,
     routing::get,
@@ -22,37 +22,39 @@ use std::{collections::HashMap, fmt::format};
 
 use chrono_tz::Asia::Bangkok;
 
-
 //
-pub async fn firestore_get_users_and_schedules()
-//  -> HashMap<String, Vec<Schedule>>
-{
-    let url = format!("{}/users", firebase::firestore_url());
+pub async fn firestore_get_users_and_schedules(
+    State(firebase_config): State<FirebaseConfig>,
+) -> impl IntoResponse {
+    //  -> HashMap<String, Vec<Schedule>>
+    {
+        let url = format!("{}/users", firebase_config.firestore_url());
+        let resp = reqwest::get(&url).await.expect("Failed to call Firestore");
+        let text = resp.text().await.expect("Failed to read body");
 
-    let resp = reqwest::get(&url).await.expect("Failed to call Firestore");
-    let text = resp.text().await.expect("Failed to read body");
+        let parsed: FirestoreUserResponse =
+            serde_json::from_str(&text).expect("Failed to parse Firestore response");
 
-    let parsed: FirestoreUserResponse =
-        serde_json::from_str(&text).expect("Failed to parse Firestore response");
+        let now = Bangkok
+            .from_utc_datetime(&chrono::Utc::now().naive_utc())
+            .naive_local();
 
-    let now = Bangkok
-        .from_utc_datetime(&chrono::Utc::now().naive_utc())
-        .naive_local();
+        let mut users_map: HashMap<String, Vec<Schedule>> = HashMap::new();
 
-    let mut users_map: HashMap<String, Vec<Schedule>> = HashMap::new();
+        for doc in parsed.documents {
+            if let Some(fields) = doc.fields {
+                if let Some(email) = fields.email {
+                    let user_email = email.stringValue.clone();
+                    let mut schedule_list = Vec::new();
 
-    for doc in parsed.documents {
-        if let Some(fields) = doc.fields {
-            if let Some(email) = fields.email {
-                let user_email = email.stringValue.clone();
-                let mut schedule_list = Vec::new();
+                    if let Some(schedules) = fields.schedules {
+                        for (_key, item) in schedules.map_value.fields {
+                            let detail = item.map_value.fields;
 
-                if let Some(schedules) = fields.schedules {
-                    for (_key, item) in schedules.map_value.fields {
-                        let detail = item.map_value.fields;
-
-                        let date =
-                            match NaiveDate::parse_from_str(&detail.date.stringValue, "%Y-%m-%d") {
+                            let date = match NaiveDate::parse_from_str(
+                                &detail.date.stringValue,
+                                "%Y-%m-%d",
+                            ) {
                                 Ok(d) => d,
                                 Err(_) => {
                                     eprintln!(
@@ -63,8 +65,10 @@ pub async fn firestore_get_users_and_schedules()
                                 }
                             };
 
-                        let time =
-                            match NaiveTime::parse_from_str(&detail.time.stringValue, "%H-%M") {
+                            let time = match NaiveTime::parse_from_str(
+                                &detail.time.stringValue,
+                                "%H-%M",
+                            ) {
                                 Ok(t) => t,
                                 Err(_) => {
                                     eprintln!(
@@ -75,33 +79,34 @@ pub async fn firestore_get_users_and_schedules()
                                 }
                             };
 
-                        let schedule_time = NaiveDateTime::new(date, time);
-                        let time_diff = schedule_time - now;
-                        let is_soon = time_diff.num_days() >= 0 && time_diff.num_days() < 3;
+                            let schedule_time = NaiveDateTime::new(date, time);
+                            let time_diff = schedule_time - now;
+                            let is_soon = time_diff.num_days() >= 0 && time_diff.num_days() < 3;
 
-                        // Debug print (optional)
-                        println!("time_difference: {:?}", time_diff);
+                            // Debug print (optional)
+                            println!("time_difference: {:?}", time_diff);
 
-                        schedule_list.push(Schedule {
-                            name: detail.name.stringValue.clone(),
-                            time: detail.time.stringValue.clone(),
-                            date: detail.date.stringValue.clone(),
-                            expiry: detail.date.stringValue.clone(),
-                            uid: detail.uid.stringValue.clone(),
-                        });
+                            schedule_list.push(Schedule {
+                                name: detail.name.stringValue.clone(),
+                                time: detail.time.stringValue.clone(),
+                                date: detail.date.stringValue.clone(),
+                                expiry: detail.date.stringValue.clone(),
+                                uid: detail.uid.stringValue.clone(),
+                            });
+                        }
                     }
-                }
 
-                users_map.insert(user_email, schedule_list);
+                    users_map.insert(user_email, schedule_list);
+                }
             }
         }
-    }
 
-    // users_map
+        // users_map
+    }
 }
 
-pub async fn handle_get_data() {
-    let url = format!("{}/users", firebase::firestore_url());
+pub async fn handle_get_data(State(firebase_config): State<FirebaseConfig>) {
+    let url = format!("{}/users", firebase_config.firestore_url());
     println!("{}", url);
 
     let response = reqwest::get(&url).await.expect("Failed to send request");
@@ -110,8 +115,12 @@ pub async fn handle_get_data() {
         response.text().await.expect("Failed to read response text")
     );
 }
-pub async fn handle_post_feedback(headers: HeaderMap, Json(payload): Json<FeedbackDocument>) {
-    let url = format!("{}/feedback", firebase::firestore_url());
+pub async fn handle_post_feedback(
+    headers: HeaderMap,
+    State(firebase_config): State<FirebaseConfig>,
+    Json(payload): Json<FeedbackDocument>,
+) {
+    let url = format!("{}/feedback", firebase_config.firestore_url());
 
     println!("{}!", payload.fields.message.stringValue);
 
@@ -119,10 +128,10 @@ pub async fn handle_post_feedback(headers: HeaderMap, Json(payload): Json<Feedba
 
     println!("Request Body: {:?}", apirequestbody);
 
-    call_firestore_post_feedback(&apirequestbody).await;
+    call_firestore_post_feedback(&apirequestbody, &url).await;
 }
-async fn call_firestore_post_feedback(apirequestbody: &String) {
-    let url = format!("{}/feedbacks", firebase::firestore_url());
+async fn call_firestore_post_feedback(apirequestbody: &String, firestore_url: &str) {
+    let url = format!("{}/feedbacks", firestore_url);
     let client = Client::new();
     let response = client
         .post(&url)
@@ -144,23 +153,26 @@ async fn call_firestore_post_feedback(apirequestbody: &String) {
         }
     }
 }
-pub async fn handle_get_feedback_devread(Path(uuid): Path<String>) -> String {
-    let response: FeedbackDocument =
-        call_firestore_get_feedback_devread(&uuid)
-            .await
-            .unwrap_or(FeedbackDocument {
-                fields: FeedbackFields {
-                    name: FirestoreStringField {
-                        stringValue: "Error".to_string(),
-                    },
-                    status: FirestoreStringField {
-                        stringValue: "Error".to_string(),
-                    },
-                    message: FirestoreStringField {
-                        stringValue: "Error".to_string(),
-                    },
+pub async fn handle_get_feedback_devread(
+    Path(uuid): Path<String>,
+    State(firebase_config): State<FirebaseConfig>,
+) -> String {
+    let firestore_url = format!("{}/feedbacks/{}", firebase_config.firestore_url(), uuid);
+    let response: FeedbackDocument = call_firestore_get_feedback_devread(&uuid, &firestore_url)
+        .await
+        .unwrap_or(FeedbackDocument {
+            fields: FeedbackFields {
+                name: FirestoreStringField {
+                    stringValue: "Error".to_string(),
                 },
-            });
+                status: FirestoreStringField {
+                    stringValue: "Error".to_string(),
+                },
+                message: FirestoreStringField {
+                    stringValue: "Error".to_string(),
+                },
+            },
+        });
     println!("name: {}", response.fields.name.stringValue);
     println!("message: {}", response.fields.message.stringValue);
     println!("status: {}", response.fields.status.stringValue);
@@ -169,12 +181,11 @@ pub async fn handle_get_feedback_devread(Path(uuid): Path<String>) -> String {
 
 pub async fn call_firestore_get_feedback_devread(
     uuid: &str,
+    firestore_url: &str,
 ) -> Result<FeedbackDocument, Box<dyn std::error::Error>> {
-    let url = format!("{}/feedbacks/{}", firebase::firestore_url(), uuid.trim());
-
     let client = Client::new();
     let resp = client
-        .get(&url)
+        .get(firestore_url)
         .header("Content-Type", "application/json")
         .send()
         .await?;
@@ -191,9 +202,12 @@ pub async fn call_firestore_get_feedback_devread(
 
 // Add this handler function to your firestore.rs file
 
-pub async fn handle_get_user_by_uid(Path(uid): Path<String>) -> impl IntoResponse {
-    let url = format!("{}/users/{}", crate::firebase::firestore_url(), uid);
-
+pub async fn handle_get_user_by_uid(
+    Path(uid): Path<String>,
+    State(firebase_config): State<FirebaseConfig>,
+) -> impl IntoResponse {
+    let url = format!("{}/users/{}", firebase_config.firestore_url(), uid);
+    println!("Fetching user from URL: {}", url);
     // Get access token for authorization
 
     let client = Client::new();
@@ -220,7 +234,7 @@ pub async fn handle_get_user_by_uid(Path(uid): Path<String>) -> impl IntoRespons
             return Json(json!({ "error": "User not found or invalid UID1" })).into_response();
         }
     };
-    println!("{}",body);
+    println!("{}", body);
     let firestore_response = match serde_json::from_str(&body) {
         Ok(data) => data,
         Err(e) => {
@@ -404,10 +418,12 @@ fn check_if_schedule_is_soon(
     }
 }
 
-pub async fn handle_get_user_summary() -> impl IntoResponse {
+pub async fn handle_get_user_summary(
+    State(firebase_config): State<FirebaseConfig>,
+) -> impl IntoResponse {
     let url = format!(
         "{}/users/HUKkTGyzLHCwyioElWBK",
-        crate::firebase::firestore_url()
+        firebase_config.firestore_url()
     );
     let resp = reqwest::get(&url).await.expect("Failed to fetch");
     let body = resp.text().await.expect("Failed to read body");

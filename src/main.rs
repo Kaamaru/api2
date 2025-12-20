@@ -23,6 +23,7 @@ mod tasks {
     pub mod hardware;
     pub mod sendmail;
     pub mod timecheck;
+    pub mod getimage;
 }
 
 mod tools {
@@ -37,6 +38,7 @@ use crate::{
         gemini::*,
         hardware::device::*,
         timecheck,
+        getimage::*,
     },
     tools::{imagebb, keycrypt},
 };
@@ -85,12 +87,16 @@ async fn main() {
         .route("/schedules/{uuid}", patch(firestore_add_schedule))
         .route("/recipes/{uuid}", patch(firestore_add_recipe));
 
-    let hardware = Router::new().route("/connect/{hardware_secrets}", post(connect_device_to_user));
+    let hardware = Router::new()
+    .route("/connect/{hardware_secrets}", post(connect_device_to_user))
+    .route("/send_image/{hardware_secrets}", post(recieve_image_bytes_esp32))
+    ;
 
     let notify = Router::new()
         .route("/on/{uuid}/{schedule_id}", patch(firestore_set_notify_on))
         .route("/off/{uuid}/{schedule_id}", patch(firestore_set_notify_off))
-        .route("/get_notify/{uuid}", get(firestore_get_notify_schedule_all));
+        .route("/get_notify/{uuid}", get(firestore_get_notify_schedule_all))
+        .route("/get_user_notify", get(firestore_get_notified_users_schedules));
 
     let app = Router::new()
         .route("/", get(handle_get).post(handle_post))

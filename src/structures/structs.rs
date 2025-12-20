@@ -195,4 +195,5 @@ pub struct AddRecipeRequest {
     pub ingredients: Vec<String>,
     pub steps: Vec<String>,
     pub time: Option<String>,
+    pub image_url: Option<String>,
 }

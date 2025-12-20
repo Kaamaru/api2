@@ -4,3 +4,4 @@ pub mod basic;
 pub mod sendmail;
 pub mod firestore;
 pub mod hardware;
+pub mod getimage;

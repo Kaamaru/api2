@@ -219,6 +219,14 @@ pub async fn firestore_add_recipe(
             .insert("time".to_string(), json!({"stringValue": time}));
     }
 
+    // Add image_url field if provided
+    if let Some(image_url) = &request.image_url {
+        recipe_fields
+            .as_object_mut()
+            .unwrap()
+            .insert("image_url".to_string(), json!({"stringValue": image_url}));
+    }
+
     // Final Firestore document structure - FIXED
     let firestore_payload = json!({
         "fields": {

@@ -3,6 +3,7 @@ use crate::structures::models::{
     ChatRequest, ChatResponse, GeminiContent, GeminiPart, GeminiRequest, GeminiResponse,
     GenerationConfig, SystemInstruction,
 };
+use crate::tasks::getimage::get_one_image;
 use axum::{extract::Json, http::StatusCode, response::Json as ResponseJson};
 use reqwest::Client;
 use serde_json::Value;
@@ -11,7 +12,8 @@ pub async fn call_gemini_api(gemini_request: &GeminiRequest) -> Result<String, r
     let api_key = std::env::var("GEMINI_API_KEY")
         .unwrap_or_else(|_| panic!("GEMINI_API_KEY not set in environment"));
 
-    let url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
+    let url =
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
 
     let client = Client::new();
 
@@ -89,7 +91,7 @@ pub async fn chat_handler_with_retry(
     //         Err(e) => return Err(e),
     //     }
     // }
-    
+
     // Single attempt without retry
     let result = try_generate_recipes(&payload).await;
     match result {
@@ -114,9 +116,48 @@ async fn try_generate_recipes(payload: &ChatRequest) -> Result<Value, StatusCode
         _ => String::new(),
     };
 
-    let system_instruction_text = format!(
-        "You are a highly creative, reliable, and friendly cooking assistant named NekoChef.\n\nYour task is to help users discover delicious meals they can cook using the ingredients they provide.\n\nGiven the following ingredients: {}\n\nSuggest exactly three distinct dishes. Each dish must:\n- Have a clear and appealing \"dishName\".\n- Include a \"portions\" object with ingredient amounts using appropriate units (grams, milliliters, pieces, tablespoons, teaspoons, cups, etc.).\n- Include a \"preparationSteps\" array, where each item is a single clear step of the recipe.\n- Use common cooking knowledge to make the best use of the given ingredients, even if not all are used in each dish.\n- Be imaginative, yet realistic to prepare in a regular kitchen.\n- Provide realistic portion sizes for 2-3 servings.\n\nRespond strictly as a JSON object with the following structure:\n\n{{\n  \"dishes\": [\n    {{\n      \"dishName\": \"Dish Title\",\n      \"portions\": {{\n        \"ingredient1\": \"amount with unit\",\n        \"ingredient2\": \"amount with unit\",\n        \"oil\": \"2 tablespoons\",\n        \"salt\": \"1 teaspoon\"\n      }},\n      \"preparationSteps\": [\n        \"Step 1...\",\n        \"Step 2...\",\n        \"...etc\"\n      ]\n    }},\n    ... 2 more dishes\n  ]\n}}\n\nPlease provide the entire response in the {} language.\nDo **not** include any extra text, commentary, or formatting outside of the JSON object.",
-        prompt_text, payload.prompt_language
+    let system_prompt = format!(
+        r#"
+You are NekoChef: a creative, reliable, friendly cooking assistant.
+
+Goal: suggest dishes people can cook with the provided ingredients.
+
+Ingredients: {ingredients}
+
+Return exactly three distinct dishes. Each dish must:
+- Have a clear "dishName".
+- Include a "simplified" field: the most basic/common name for the dish (for image search).
+- Include a "portions" object with ingredient amounts and units.
+- Include a "preparationSteps" array of concise steps.
+- Use common cooking knowledge; be imaginative but realistic; 2-3 servings.
+
+Respond strictly as JSON in this shape:
+{{
+  "dishes": [
+    {{
+      "dishName": "Dish Title",
+      "simplified": "basic dish type",
+      "portions": {{
+        "ingredient1": "amount with unit",
+        "ingredient2": "amount with unit",
+        "oil": "2 tablespoons",
+        "salt": "1 teaspoon"
+      }},
+      "preparationSteps": [
+        "Step 1...",
+        "Step 2...",
+        "...etc"
+      ]
+    }},
+    ... 2 more dishes
+  ]
+}}
+
+Output language: {language}.
+Do not add extra text outside the JSON object.
+"#,
+        ingredients = prompt_text,
+        language = payload.prompt_language
     );
 
     let content_text = format!(
@@ -131,12 +172,12 @@ async fn try_generate_recipes(payload: &ChatRequest) -> Result<Value, StatusCode
         .map(|s| s.split(',').count())
         .unwrap_or(5);
 
-    let token_limit = std::cmp::max(3000, ingredient_count * 300);
+    let token_limit = std::cmp::max(5000, ingredient_count * 300);
 
     let gemini_request = GeminiRequest {
         system_instruction: Some(SystemInstruction {
             parts: vec![GeminiPart {
-                text: system_instruction_text,
+                text: system_prompt,
             }],
         }),
         contents: vec![GeminiContent {
@@ -151,7 +192,8 @@ async fn try_generate_recipes(payload: &ChatRequest) -> Result<Value, StatusCode
     };
 
     let client = Client::new();
-    let url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
+    let url =
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
 
     println!("Sending request to: {}", url);
     println!("With API key: {}", api_key);
@@ -192,15 +234,21 @@ async fn try_generate_recipes(payload: &ChatRequest) -> Result<Value, StatusCode
         .map(|p| p.text.clone())
         .unwrap_or_else(|| "No response".to_string());
 
-    println!("Raw Gemini response: {}", response_text);
-    println!(
-        "Response starts with ```json: {}",
-        response_text.starts_with("```json")
-    );
-    println!(
-        "Response starts with ```: {}",
-        response_text.starts_with("```")
-    );
+    let log_response = |label: &str, text: &str| {
+        let max = 600;
+        let len_chars = text.chars().count();
+        let preview: String = text.chars().take(max).collect();
+        if len_chars > max {
+            println!(
+                "{} ({} chars, showing {}): {}...",
+                label, len_chars, max, preview
+            );
+        } else {
+            println!("{} ({} chars): {}", label, len_chars, preview);
+        }
+    };
+
+    log_response("Raw Gemini response", &response_text);
 
     // Clean up the response - remove markdown code blocks
     let cleaned_response = {
@@ -221,48 +269,100 @@ async fn try_generate_recipes(payload: &ChatRequest) -> Result<Value, StatusCode
         text.trim().to_string()
     };
 
-    println!("Cleaned response: {}", cleaned_response);
+    log_response("Cleaned Gemini response", &cleaned_response);
     println!("Attempting to parse JSON...");
 
     // Parse the JSON response
-    let parsed_json: Value = serde_json::from_str(&cleaned_response).map_err(|e| {
+    let mut parsed_json: Value = serde_json::from_str(&cleaned_response).map_err(|e| {
         println!("Failed to parse Gemini response as JSON: {}", e);
         println!("Raw response: {}", response_text);
         println!("Cleaned response: {}", cleaned_response);
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    // Pretty print to terminal (optional - you can remove this if not needed)
+    // Concise pretty print to terminal
     if let Some(dishes) = parsed_json.get("dishes").and_then(|d| d.as_array()) {
-        println!("\n🍳 NekoChef's Recipe Suggestions:");
-        println!("================================");
+        println!("\n🍳 NekoChef's Recipe Suggestions (summary):");
+        println!("========================================");
+
+        let trunc = |s: &str, max: usize| {
+            let mut out = s.chars().take(max).collect::<String>();
+            if s.chars().count() > max {
+                out.push_str("...");
+            }
+            out
+        };
 
         for (i, dish) in dishes.iter().enumerate() {
-            if let Some(name) = dish.get("dishName").and_then(|n| n.as_str()) {
-                println!("\n{}. 🍽️  {}", i + 1, name);
+            let name = dish
+                .get("dishName")
+                .and_then(|n| n.as_str())
+                .map(|s| trunc(s, 80))
+                .unwrap_or("(missing name)".to_string());
+            let simplified = dish
+                .get("simplified")
+                .and_then(|n| n.as_str())
+                .map(|s| trunc(s, 40))
+                .unwrap_or("(missing simplified)".to_string());
 
-                // Print portions if available
-                if let Some(portions) = dish.get("portions").and_then(|p| p.as_object()) {
-                    println!("   📏 Ingredients:");
-                    for (ingredient, amount) in portions {
-                        if let Some(amount_str) = amount.as_str() {
-                            println!("   - {}: {}", ingredient, amount_str);
-                        }
+            let step_count = dish
+                .get("preparationSteps")
+                .and_then(|s| s.as_array())
+                .map(|s| s.len())
+                .unwrap_or(0);
+
+            let portion_keys = dish
+                .get("portions")
+                .and_then(|p| p.as_object())
+                .map(|m| {
+                    let keys: Vec<String> = m.keys().take(5).cloned().collect();
+                    let mut joined = keys.join(", ");
+                    if m.len() > 5 {
+                        joined.push_str(", ...");
                     }
-                }
+                    joined
+                })
+                .unwrap_or_else(|| "".to_string());
 
-                // Print steps
-                if let Some(steps) = dish.get("preparationSteps").and_then(|s| s.as_array()) {
-                    println!("   👨‍🍳 Steps:");
-                    for (step_num, step) in steps.iter().enumerate() {
-                        if let Some(step_text) = step.as_str() {
-                            println!("   {}. {}", step_num + 1, step_text);
-                        }
+            println!(
+                "{}. {} \n simplified: {} \n steps: {} \n portions: {}",
+                i + 1,
+                name,
+                simplified,
+                step_count,
+                portion_keys
+            );
+        }
+        println!("========================================\n");
+    } else {
+        println!("FAILED TO PARSE DISHES FROM RESPONSE");
+    }
+
+    // Attempt to fetch images for each dish and add to response
+    if let Some(dishes) = parsed_json.get_mut("dishes").and_then(|d| d.as_array_mut()) {
+        for dish in dishes.iter_mut() {
+            // 1️⃣ Extract owned String first (end immutable borrow)
+            let simplified = dish
+                .get("simplified")
+                .and_then(|s| s.as_str())
+                .map(|s| s.to_string());
+
+            // 2️⃣ Now safe to mutate dish
+            if let Some(simplified) = simplified {
+                match get_one_image(&simplified).await {
+                    Ok(Some(image_url)) => {
+                        dish["image_url"] = Value::String(image_url);
+                        println!("  ✓ Image fetched for '{}'", simplified);
+                    }
+                    Ok(None) => {
+                        println!("  ⚠ No image found for '{}'", simplified);
+                    }
+                    Err(e) => {
+                        println!("  ✗ Error fetching image for '{}': {}", simplified, e);
                     }
                 }
             }
         }
-        println!("\n================================");
     }
 
     // Return the parsed JSON directly

@@ -20,8 +20,8 @@ mod tasks {
     pub mod basic;
     pub mod firestore;
     pub mod gemini;
-    pub mod sendmail;
     pub mod hardware;
+    pub mod sendmail;
     pub mod timecheck;
 }
 
@@ -33,10 +33,10 @@ mod tools {
 use crate::{
     tasks::{
         basic,
-        firestore::{firestore::*, modify::*},
+        firestore::{firestore::*, modify::*, notify::*},
         gemini::*,
+        hardware::device::*,
         timecheck,
-        hardware::{device::*},
     },
     tools::{imagebb, keycrypt},
 };
@@ -82,17 +82,15 @@ async fn main() {
 
     let add_datas = Router::new()
         .route("/", patch(add_get))
-        .route(
-            "/schedules/{uuid}",
-            patch(firestore_add_schedule),
-        )
-        .route(
-            "/recipes/{uuid}",
-            patch(firestore_add_recipe),
-        );
+        .route("/schedules/{uuid}", patch(firestore_add_schedule))
+        .route("/recipes/{uuid}", patch(firestore_add_recipe));
 
-    let hardware = Router::new()
-        .route("/connect", post(connect_device_to_user));
+    let hardware = Router::new().route("/connect/{hardware_secrets}", post(connect_device_to_user));
+
+    let notify = Router::new()
+        .route("/on/{uuid}/{schedule_id}", patch(firestore_set_notify_on))
+        .route("/off/{uuid}/{schedule_id}", patch(firestore_set_notify_off))
+        .route("/get_notify/{uuid}", get(firestore_get_notify_schedule_all));
 
     let app = Router::new()
         .route("/", get(handle_get).post(handle_post))
@@ -106,8 +104,10 @@ async fn main() {
         .nest("/change", change_datas)
         .nest("/delete", delete_datas)
         .nest("/add", add_datas)
+        .nest("/notify", notify)
         .nest("/hardware", hardware)
-        .layer(cors).with_state(firebase_config);
+        .layer(cors)
+        .with_state(firebase_config);
 
     let listener = tokio::net::TcpListener::bind("localhost:4444")
         .await

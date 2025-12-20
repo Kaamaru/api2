@@ -90,8 +90,17 @@ pub async fn firestore_get_users_and_schedules(
                                 name: detail.name.stringValue.clone(),
                                 time: detail.time.stringValue.clone(),
                                 date: detail.date.stringValue.clone(),
-                                expiry: detail.date.stringValue.clone(),
+                                expiry: detail.expiry.stringValue.clone(),
                                 uid: detail.uid.stringValue.clone(),
+                                notify: detail
+                                    .notify
+                                    .as_ref()
+                                    .map(|n| n.booleanValue)
+                                    .unwrap_or(false),
+                                category: detail
+                                    .category
+                                    .as_ref()
+                                    .map(|c| c.stringValue.clone()),
                             });
                         }
                     }
@@ -262,7 +271,8 @@ pub async fn handle_get_user_by_uid(
             "time": schedule.time,
             "date": schedule.date,
             "expiry": schedule.expiry,
-            "uid": schedule.uid
+            "uid": schedule.uid,
+            "category": schedule.category
 
         })).collect::<Vec<_>>()
     }))
@@ -312,6 +322,12 @@ fn convert_firestore_schedules_to_clean(schedule_map: FirestoreMapField) -> Vec<
         let date = schedule_detail.date.stringValue;
         let expiry = schedule_detail.expiry.stringValue;
         let uid = schedule_detail.uid.stringValue;
+        let notify = schedule_detail
+            .notify
+            .as_ref()
+            .map(|n| n.booleanValue)
+            .unwrap_or(false);
+        let category = schedule_detail.category.as_ref().map(|c| c.stringValue.clone());
 
         // Check if schedule is soon (within next 30 minutes)
 
@@ -321,6 +337,8 @@ fn convert_firestore_schedules_to_clean(schedule_map: FirestoreMapField) -> Vec<
             date,
             expiry,
             uid,
+            notify,
+            category,
         });
     }
 

@@ -9,13 +9,19 @@ use serde_json::Value;
 
 pub async fn call_gemini_api(gemini_request: &GeminiRequest) -> Result<String, reqwest::Error> {
     let api_key = std::env::var("GEMINI_API_KEY")
-        .unwrap_or_else(|_| "AIzaSyCycTkqXarUfS1UyIaMi60NC0UqqvJ6BJ4".to_string());
+        .unwrap_or_else(|_| panic!("GEMINI_API_KEY not set in environment"));
 
-    let url = format!("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={}", api_key);
+    let url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
 
     let client = Client::new();
 
-    let response = client.post(&url).json(gemini_request).send().await?;
+    let response = client
+        .post(url)
+        .header("x-goog-api-key", &api_key)
+        .header("Content-Type", "application/json")
+        .json(gemini_request)
+        .send()
+        .await?;
 
     if !response.status().is_success() {
         let err_text = response.text().await.unwrap_or_default();
@@ -49,38 +55,46 @@ pub async fn call_gemini_api(gemini_request: &GeminiRequest) -> Result<String, r
 pub async fn chat_handler_with_retry(
     Json(payload): Json<ChatRequest>,
 ) -> Result<ResponseJson<Value>, StatusCode> {
-    const MAX_RETRIES: u32 = 2;
-    let mut attempt = 0;
+    // RETRY LOGIC DISABLED DUE TO 429 RATE LIMIT ERRORS
+    // const MAX_RETRIES: u32 = 2;
+    // let mut attempt = 0;
 
-    loop {
-        attempt += 1;
+    // loop {
+    //     attempt += 1;
 
-        let result = try_generate_recipes(&payload).await;
+    //     let result = try_generate_recipes(&payload).await;
 
-        match result {
-            Ok(json) => {
-                // Check if we got complete recipes
-                if let Some(dishes) = json.get("dishes").and_then(|d| d.as_array()) {
-                    if dishes.len() == 3 {
-                        return Ok(ResponseJson(json));
-                    }
-                }
+    //     match result {
+    //         Ok(json) => {
+    //             // Check if we got complete recipes
+    //             if let Some(dishes) = json.get("dishes").and_then(|d| d.as_array()) {
+    //                 if dishes.len() == 3 {
+    //                     return Ok(ResponseJson(json));
+    //                 }
+    //             }
 
-                // If incomplete and we have retries left, try again
-                if attempt < MAX_RETRIES {
-                    println!("Incomplete response, retrying... (attempt {})", attempt + 1);
-                    continue;
-                }
+    //             // If incomplete and we have retries left, try again
+    //             if attempt < MAX_RETRIES {
+    //                 println!("Incomplete response, retrying... (attempt {})", attempt + 1);
+    //                 continue;
+    //             }
 
-                // Return what we have
-                return Ok(ResponseJson(json));
-            }
-            Err(e) if attempt < MAX_RETRIES => {
-                println!("Request failed, retrying... (attempt {})", attempt + 1);
-                continue;
-            }
-            Err(e) => return Err(e),
-        }
+    //             // Return what we have
+    //             return Ok(ResponseJson(json));
+    //         }
+    //         Err(e) if attempt < MAX_RETRIES => {
+    //             println!("Request failed, retrying... (attempt {})", attempt + 1);
+    //             continue;
+    //         }
+    //         Err(e) => return Err(e),
+    //     }
+    // }
+    
+    // Single attempt without retry
+    let result = try_generate_recipes(&payload).await;
+    match result {
+        Ok(json) => Ok(ResponseJson(json)),
+        Err(e) => Err(e),
     }
 }
 
@@ -110,7 +124,15 @@ async fn try_generate_recipes(payload: &ChatRequest) -> Result<Value, StatusCode
         prompt_text, payload.prompt_language
     );
 
-    let output_token_limit = 1500;
+    // Use higher token limit based on ingredients count
+    let ingredient_count = payload
+        .prompt
+        .as_str()
+        .map(|s| s.split(',').count())
+        .unwrap_or(5);
+
+    let token_limit = std::cmp::max(3000, ingredient_count * 300);
+
     let gemini_request = GeminiRequest {
         system_instruction: Some(SystemInstruction {
             parts: vec![GeminiPart {
@@ -121,42 +143,27 @@ async fn try_generate_recipes(payload: &ChatRequest) -> Result<Value, StatusCode
             parts: vec![GeminiPart { text: content_text }],
         }],
         generation_config: GenerationConfig {
-            temperature: 1.0,
-            max_output_tokens: output_token_limit + 500,
+            temperature: 0.7,
+            max_output_tokens: token_limit as u32,
             top_p: 0.8,
-            top_k: 10,
+            top_k: 40,
         },
-    };
-    // Use higher token limit based on ingredients count
-    let ingredient_count = payload
-        .prompt
-        .as_str()
-        .map(|s| s.split(',').count())
-        .unwrap_or(5);
-
-    let token_limit = std::cmp::max(1500, ingredient_count * 200);
-
-    let generation_config = GenerationConfig {
-        temperature: 0.7,
-        max_output_tokens: token_limit as u32,
-        top_p: 0.8,
-        top_k: 40,
     };
 
     let client = Client::new();
-    let url = format!(
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={}",
-        api_key
-    );
+    let url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
 
     println!("Sending request to: {}", url);
+    println!("With API key: {}", api_key);
     println!(
         "Request body: {}",
         serde_json::to_string_pretty(&gemini_request).unwrap()
     );
 
     let response = client
-        .post(&url)
+        .post(url)
+        .header("x-goog-api-key", api_key)
+        .header("Content-Type", "application/json")
         .json(&gemini_request)
         .send()
         .await
@@ -293,9 +300,3 @@ fn validate_recipe_response(json: &Value) -> bool {
 
     false
 }
-
-
-
-
-
-

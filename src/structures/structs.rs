@@ -14,7 +14,10 @@ pub struct TheResponse {
 pub struct FirestoreStringField {
     pub stringValue: String,
 }
-
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct FirestoreBooleanField {
+    pub booleanValue: bool,
+}
 #[derive(Serialize, Deserialize, Debug)]
 pub struct FeedbackFields {
     pub name: FirestoreStringField,
@@ -68,6 +71,10 @@ pub struct FirestoreScheduleDetail {
     pub date: FirestoreStringField,
     pub expiry: FirestoreStringField,
     pub uid: FirestoreStringField,
+    #[serde(default)]
+    pub notify: Option<FirestoreBooleanField>,
+    #[serde(default)]
+    pub category: Option<FirestoreStringField>,
 }
 
 #[derive(Serialize, Debug, Clone)]
@@ -77,6 +84,8 @@ pub struct Schedule {
     pub date: String,
     pub expiry: String, // Added expiry field
     pub uid: String,
+    pub notify: bool,
+    pub category: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -167,6 +176,8 @@ pub struct FirestoreChangeSchedule {
     pub time: Option<String>,
     pub date: Option<String>,
     pub expiry: Option<String>,
+    pub notify: Option<bool>,
+    pub category: Option<String>,
 }
 #[derive(serde::Deserialize)]
 pub struct AddScheduleRequest {
@@ -174,6 +185,8 @@ pub struct AddScheduleRequest {
     pub time: String,
     pub date: String,
     pub expiry: String,
+    pub notify: bool,
+    pub category: Option<String>,
 }
 
 #[derive(serde::Deserialize)]

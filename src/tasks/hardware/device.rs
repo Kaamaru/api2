@@ -1,6 +1,6 @@
-use axum::{Json, extract::State, response::IntoResponse};
+use axum::{Json, extract::{State, Path}, response::IntoResponse};
 use serde::Deserialize;
-
+use firestore::*;
 
 // esp will make a req to api
 #[derive(Deserialize)]
@@ -8,9 +8,10 @@ pub struct HardwareAuthenticate{
     pub userid: String,
 }
 
-// POST /hardware/connect + body
-pub async fn connect_device_to_user(Json(payload) : Json<HardwareAuthenticate>) -> impl IntoResponse{
+// POST /hardware/connect/hardware_secrets  + body
+pub async fn connect_device_to_user(Path(hardware_secrets): Path<String>,Json(payload) : Json<HardwareAuthenticate>) -> impl IntoResponse{
     println!("Connecting device for user: {}", payload.userid);
+    println!("Connecting device for hardware: {}", hardware_secrets );
     // Here, you would add logic to associate the device with the user in your database
     Json(serde_json::json!({
         "status": "success",

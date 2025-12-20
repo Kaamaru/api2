@@ -54,6 +54,7 @@ struct MealData {
     expiry: Option<StringValue>,
     date: Option<StringValue>,
     time: Option<StringValue>,
+    category: Option<StringValue>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -94,6 +95,23 @@ pub async fn firestore_add_schedule(
         new_id
     );
     println!("PATCH URL: {}", patch_url);
+    // Build schedule fields with optional category
+    let mut schedule_fields = json!({
+        "uid": { "stringValue": new_id.clone() },
+        "name": { "stringValue": request.name },
+        "time": { "stringValue": request.time },
+        "date": { "stringValue": request.date },
+        "expiry": { "stringValue": request.expiry },
+        "notify": { "booleanValue": request.notify }
+    });
+
+    if let Some(category) = &request.category {
+        schedule_fields
+            .as_object_mut()
+            .unwrap()
+            .insert("category".to_string(), json!({"stringValue": category}));
+    }
+
     // Firestore payload to insert new item into 'schedules'
     let firestore_payload = json!({
         "fields": {
@@ -102,13 +120,7 @@ pub async fn firestore_add_schedule(
                     "fields": {
                         new_id.clone(): {
                             "mapValue": {
-                                "fields": {
-                                    "uid": { "stringValue": new_id.clone() },
-                                    "name": { "stringValue": request.name },
-                                    "time": { "stringValue": request.time },
-                                    "date": { "stringValue": request.date },
-                                    "expiry": { "stringValue": request.expiry }
-                                }
+                                "fields": schedule_fields
                             }
                         }
                     }
@@ -147,6 +159,7 @@ pub async fn firestore_add_schedule(
             "time": request.time,
             "date": request.date,
             "expiry": request.expiry,
+            "category": request.category,
         },
         "updated_at": chrono::Utc::now().to_rfc3339()
     }))
@@ -297,6 +310,13 @@ pub async fn firestore_change_schedule(
             meal_fields.insert(
                 "time".to_string(),
                 json!({"stringValue": time.string_value}),
+            );
+        }
+
+        if let Some(category) = meal_value.map_value.fields.category {
+            meal_fields.insert(
+                "category".to_string(),
+                json!({"stringValue": category.string_value}),
             );
         }
 

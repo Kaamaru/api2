@@ -102,7 +102,8 @@ pub async fn firestore_add_schedule(
         "time": { "stringValue": request.time },
         "date": { "stringValue": request.date },
         "expiry": { "stringValue": request.expiry },
-        "notify": { "booleanValue": request.notify }
+        "notify": { "booleanValue": request.notify },
+        "category": { "stringValue": request.category.clone().unwrap_or_default() }  // default empty
     });
 
     if let Some(category) = &request.category {
@@ -624,6 +625,70 @@ pub async fn firestore_delete_recipe(
         "uuid": uuid,
         "deleted_recipe": recipe_key,
         "deleted_at": chrono::Utc::now().to_rfc3339()
+    }))
+    .into_response()
+}
+
+pub async fn firestore_change_displayname(
+    Path((uuid, newname)): Path<(String, String)>,
+    State(firebase_config): State<FirebaseConfig>,
+) -> impl IntoResponse {
+    let client = Client::new();
+    
+    // Build update URL with updateMask to only update displayName
+    let update_url = format!(
+        "{}?updateMask.fieldPaths=displayName",
+        format!("{}/users/{}", firebase_config.firestore_url(), uuid)
+    );
+
+    // Create Firestore payload to update displayName
+    let firestore_payload = json!({
+        "fields": {
+            "displayName": {
+                "stringValue": newname
+            }
+        }
+    });
+
+    let response = match client
+        .patch(&update_url)
+        .json(&firestore_payload)
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(e) => {
+            eprintln!("❌ Failed to update displayName: {}", e);
+            return Json(json!({ "error": "Failed to update displayName" })).into_response();
+        }
+    };
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        eprintln!("⚠️ Firestore update failed: {status}\n{body}");
+        return Json(json!({ "error": "Failed to update displayName", "details": body }))
+            .into_response();
+    }
+
+    let body = match response.text().await {
+        Ok(body) => {
+            println!("✅ DisplayName updated successfully: {}", body);
+            body
+        }
+        Err(e) => {
+            eprintln!("Failed to get response body: {}", e);
+            return Json(json!({ "error": "Failed to update displayName" })).into_response();
+        }
+    };
+
+    // Return success response
+    Json(json!({
+        "success": true,
+        "message": "Display name updated successfully",
+        "uuid": uuid,
+        "new_displayName": newname,
+        "updated_at": chrono::Utc::now().to_rfc3339()
     }))
     .into_response()
 }

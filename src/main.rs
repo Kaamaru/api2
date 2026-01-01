@@ -20,10 +20,10 @@ mod tasks {
     pub mod basic;
     pub mod firestore;
     pub mod gemini;
+    pub mod getimage;
     pub mod hardware;
     pub mod sendmail;
     pub mod timecheck;
-    pub mod getimage;
 }
 
 mod tools {
@@ -36,9 +36,9 @@ use crate::{
         basic,
         firestore::{firestore::*, modify::*, notify::*},
         gemini::*,
+        getimage::*,
         hardware::device::*,
         timecheck,
-        getimage::*,
     },
     tools::{imagebb, keycrypt},
 };
@@ -51,6 +51,8 @@ use timecheck::timeloop;
 
 pub use firebase::FirebaseConfig;
 
+use crate::tasks::sendmail::do_expiration_mail;
+
 #[tokio::main]
 async fn main() {
     let firebase_config = FirebaseConfig::from_env();
@@ -60,6 +62,9 @@ async fn main() {
 
     println!("{}", firebase_config.firestore_url());
     keycrypt();
+    println!("\n\n{:?}\n\n", firestore_get_notified_users_schedules().await);
+    do_expiration_mail().await;
+
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
@@ -69,7 +74,11 @@ async fn main() {
         .route("/devread/{uuid}", get(handle_get_feedback_devread));
     let change_datas = Router::new()
         .route("/", patch(change_get))
-        .route("/schedules/{uuid}", patch(firestore_change_schedule));
+        .route("/schedules/{uuid}", patch(firestore_change_schedule))
+        .route(
+            "/displayname/{uuid}/{newname}",
+            patch(firestore_change_displayname),
+        );
     // .route("/recipe/{uuid}", patch(firestore_change_recipe));
     let delete_datas = Router::new()
         .route("/", delete(delete_get))
@@ -88,15 +97,18 @@ async fn main() {
         .route("/recipes/{uuid}", patch(firestore_add_recipe));
 
     let hardware = Router::new()
-    .route("/connect/{hardware_secrets}", post(connect_device_to_user))
-    .route("/send_image/{hardware_secrets}", post(recieve_image_bytes_esp32))
-    ;
+        .route("/connect/{hardware_secrets}", post(connect_device_to_user))
+        .route(
+            "/send_image/{hardware_secrets}",
+            post(recieve_image_bytes_esp32),
+        );
 
     let notify = Router::new()
         .route("/on/{uuid}/{schedule_id}", patch(firestore_set_notify_on))
         .route("/off/{uuid}/{schedule_id}", patch(firestore_set_notify_off))
         .route("/get_notify/{uuid}", get(firestore_get_notify_schedule_all))
-        .route("/get_user_notify", get(firestore_get_notified_users_schedules));
+        // .route("/get_user_notify", get(firestore_get_notified_users_schedules));
+        ;
 
     let app = Router::new()
         .route("/", get(handle_get).post(handle_post))

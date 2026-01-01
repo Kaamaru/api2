@@ -1,38 +1,97 @@
-use tensorflow::{Graph, SessionOptions, SessionRunArgs, SavedModelBundle, Tensor};
+use serde::{Deserialize, Serialize};
+use std::process::Command;
+use std::path::Path;
 
-fn main() {
-    // Load SavedModel
-    let mut graph = Graph::new();
-    let bundle = SavedModelBundle::load(
-        &SessionOptions::new(),
-        &["serve"],
-        &mut graph,
-        "model/"
-    ).expect("failed to load model");
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Prediction {
+    pub label: String,
+    pub confidence: f32,
+}
 
-    let session = &bundle.session;
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ClassificationResult {
+    pub success: bool,
+    pub predicted_label: Option<String>,
+    pub confidence: Option<f32>,
+    pub top_predictions: Option<Vec<Prediction>>,
+    pub error: Option<String>,
+}
 
-    // --- PREPARE INPUT TENSOR ---
-    // Example: 224x224 RGB image normalized 0..1
-    let img = vec![0.0_f32; 1 * 224 * 224 * 3];
-    let input_tensor = Tensor::<f32>::new(&[1, 224, 224, 3])
-        .with_values(&img)
-        .unwrap();
+pub fn classify_image(
+    image_path: &str,
+) -> Result<ClassificationResult, Box<dyn std::error::Error + Send + Sync>> {
+    let model_path = "models/blackblue/model.savedmodel";
+    let labels_path = "models/blackblue/labels.txt";
+    let script_path = "scripts/classify.py";
+    
+    // Use your conda environment Python
+    let python_path = "/home/kaamaru/miniconda3/envs/basic/bin/python";
+    
+    // Check if files exist
+    if !Path::new(image_path).exists() {
+        return Err(format!("Image file not found: {}", image_path).into());
+    }
+    if !Path::new(model_path).exists() {
+        return Err(format!("Model not found: {}", model_path).into());
+    }
+    if !Path::new(labels_path).exists() {
+        return Err(format!("Labels file not found: {}", labels_path).into());
+    }
+    if !Path::new(script_path).exists() {
+        return Err(format!("Python script not found: {}", script_path).into());
+    }
+    
+    println!("Classifying image: {}", image_path);
+    
+    // Run the Python script
+    let output = Command::new(python_path)
+        .arg(script_path)
+        .arg(image_path)
+        .arg(model_path)
+        .arg(labels_path)
+        .output()?;
+    
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Python script failed: {}", stderr).into());
+    }
+    
+    // Parse the JSON output
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let result: ClassificationResult = serde_json::from_str(&stdout)?;
+    
+    Ok(result)
+}
 
-    // --- SETUP RUN ARGUMENTS ---
-    let mut args = SessionRunArgs::new();
-
-    // CHANGE THESE TWO NAMES:
-    let input_op = graph.operation_by_name_required("serving_default_input_1").unwrap();
-    let output_op = graph.operation_by_name_required("StatefulPartitionedCall").unwrap();
-
-    args.add_feed(&input_op, 0, &input_tensor);
-    let output_token = args.request_fetch(&output_op, 0);
-
-    // --- RUN INFERENCE ---
-    session.run(&mut args).unwrap();
-
-    let output: Tensor<f32> = args.fetch(output_token).unwrap();
-
-    println!("Raw output: {:?}", output);
+pub fn process_image(image_path: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    match classify_image(image_path) {
+        Ok(result) => {
+            if result.success {
+                println!("{:?}", result);
+                println!("\n=== Classification Result ===");
+                println!("Predicted: {} ({:.2}% confidence)", 
+                    result.predicted_label.unwrap(),
+                    result.confidence.unwrap() * 100.0
+                );
+                
+                if let Some(top_preds) = result.top_predictions {
+                    println!("\nTop 3 Predictions:");
+                    for (i, pred) in top_preds.iter().enumerate() {
+                        println!("  {}. {} - {:.2}%", 
+                            i + 1, 
+                            pred.label, 
+                            pred.confidence * 100.0
+                        );
+                    }
+                }
+            } else {
+                eprintln!("Classification failed: {}", result.error.unwrap());
+            }
+        }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+        }
+    }
+    
+    Ok(())
 }

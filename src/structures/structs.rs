@@ -66,11 +66,16 @@ pub struct FirestoreScheduleMap {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct FirestoreScheduleDetail {
-    pub name: FirestoreStringField,
-    pub time: FirestoreStringField,
-    pub date: FirestoreStringField,
-    pub expiry: FirestoreStringField,
-    pub uid: FirestoreStringField,
+    #[serde(default)]
+    pub name: Option<FirestoreStringField>,
+    #[serde(default)]
+    pub time: Option<FirestoreStringField>,
+    #[serde(default)]
+    pub date: Option<FirestoreStringField>,
+    #[serde(default)]
+    pub expiry: Option<FirestoreStringField>,
+    #[serde(default)]
+    pub uid: Option<FirestoreStringField>,
     #[serde(default)]
     pub notify: Option<FirestoreBooleanField>,
     #[serde(default)]
@@ -100,12 +105,20 @@ pub struct FirestoreArrayValues {
 }
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct RecipeField {
-    pub name: FirestoreStringField,
-    pub ingredients: FirestoreArrayField,
-    pub steps: FirestoreArrayField,
-    #[serde(default)] // <- prevents panic when missing
+    #[serde(default)]
+    pub name: Option<FirestoreStringField>,
+    #[serde(default)]
+    pub ingredients: Option<FirestoreArrayField>,
+    #[serde(default)]
+    pub steps: Option<FirestoreArrayField>,
+    #[serde(default)]
     pub time: Option<FirestoreStringField>,
-    pub uid: FirestoreStringField,
+    #[serde(default)]
+    pub uid: Option<FirestoreStringField>,
+    #[serde(default)]
+    pub image_url: Option<FirestoreStringField>,
+
+   
 }
 
 // Updated UserFields to include username and better recipe handling
@@ -159,6 +172,7 @@ pub struct Recipe {
     pub ingredients: Vec<String>,
     pub steps: Vec<String>,
     pub time: Option<String>,
+    pub image_url: Option<String>,
 }
 
 // Clean structs for API response

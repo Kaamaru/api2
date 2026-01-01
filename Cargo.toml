@@ -5,12 +5,14 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1.0.100"
-axum = { version = "0.8.1", features = ["macros"] }
+axum = { version = "0.8.1", features = ["macros","multipart"] }
 chrono = { version = "0.4.41", features = ["serde"] }
 chrono-tz = "0.10.3"
 dotenv = "0.15.0"
 firestore = "0.47.0"
 futures = "0.3.31"
+futures-util = "0.3.31"
+image = "0.25.9"
 imgbb = "1.4.0"
 lettre = { version = "0.11.17", features = ["builder", "smtp-transport"] }
 magic-crypt = "4.0.1"
@@ -22,4 +24,6 @@ serpapi-search-rust = "0.1.1"
 tensorflow = "0.21.0"
 tokio = { version = "1.28.2", features = ["full"] }
 tower-http = { version = "0.6.6", features = ["cors"] }
+tract-core = "0.22.0"
+tract-onnx = "0.22.0"
 uuid = { version = "1.17.0", features = ["v4"] }

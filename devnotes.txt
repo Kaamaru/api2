@@ -1,0 +1,9 @@
+to make the device system
+
+make a onnx model with the python -m thing
+
+
+send from device
+get by hardware secrets -> userid
+
+by userid       

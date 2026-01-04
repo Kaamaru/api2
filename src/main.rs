@@ -62,12 +62,7 @@ async fn main() {
         timeloop().await;
     });
 
-    println!("{}", firebase_config.firestore_url());
     keycrypt();
-    println!(
-        "\n\n{:?}\n\n",
-        firestore_get_notified_users_schedules().await
-    );
     do_expiration_mail().await;
 
     let cors = CorsLayer::new()
@@ -101,7 +96,7 @@ async fn main() {
         .route("/schedules/{uuid}", patch(firestore_add_schedule))
         .route("/recipes/{uuid}", patch(firestore_add_recipe));
 
-    let hardware = Router::new()
+    let     hardware = Router::new()
         .route("/connect/{hardware_secrets}", post(connect_device_to_user))
         .route(
             "/send_image/{hardware_secrets}",

@@ -1,6 +1,6 @@
 use crate::firebase::GeminiConfig;
 use crate::structures::models::{
-    ChatRequest, ChatResponse, GeminiContent, GeminiPart, GeminiRequest, GeminiResponse,
+    ChatRequest, GeminiContent, GeminiPart, GeminiRequest, GeminiResponse,
     GenerationConfig, SystemInstruction,
 };
 use crate::tasks::getimage::get_one_image;
@@ -8,6 +8,7 @@ use axum::{extract::Json, http::StatusCode, response::Json as ResponseJson};
 use reqwest::Client;
 use serde_json::Value;
 
+#[allow(dead_code)]
 pub async fn call_gemini_api(gemini_request: &GeminiRequest) -> Result<String, reqwest::Error> {
     let api_key = GeminiConfig::from_env().api_key;
 
@@ -192,13 +193,6 @@ Do not add extra text outside the JSON object.
     let client = Client::new();
     let url = GeminiConfig::from_env().base_url;
 
-    println!("Sending request to: {}", url);
-    println!("With API key: {}", api_key);
-    println!(
-        "Request body: {}",
-        serde_json::to_string_pretty(&gemini_request).unwrap()
-    );
-
     let response = client
         .post(url)
         .header("x-goog-api-key", api_key)
@@ -206,21 +200,15 @@ Do not add extra text outside the JSON object.
         .json(&gemini_request)
         .send()
         .await
-        .map_err(|e| {
-            println!("Request error: {}", e);
+        .map_err(|_| {
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
 
-    println!("Response status: {}", response.status());
-
     if !response.status().is_success() {
-        let error_text = response.text().await.unwrap_or_default();
-        println!("API error response: {}", error_text);
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
 
-    let gemini_response: GeminiResponse = response.json().await.map_err(|e| {
-        println!("JSON parse error: {}", e);
+    let gemini_response: GeminiResponse = response.json().await.map_err(|_| {
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
@@ -230,22 +218,6 @@ Do not add extra text outside the JSON object.
         .and_then(|c| c.content.parts.first())
         .map(|p| p.text.clone())
         .unwrap_or_else(|| "No response".to_string());
-
-    let log_response = |label: &str, text: &str| {
-        let max = 600;
-        let len_chars = text.chars().count();
-        let preview: String = text.chars().take(max).collect();
-        if len_chars > max {
-            println!(
-                "{} ({} chars, showing {}): {}...",
-                label, len_chars, max, preview
-            );
-        } else {
-            println!("{} ({} chars): {}", label, len_chars, preview);
-        }
-    };
-
-    log_response("Raw Gemini response", &response_text);
 
     // Clean up the response - remove markdown code blocks
     let cleaned_response = {
@@ -266,73 +238,15 @@ Do not add extra text outside the JSON object.
         text.trim().to_string()
     };
 
-    log_response("Cleaned Gemini response", &cleaned_response);
-    println!("Attempting to parse JSON...");
-
     // Parse the JSON response
-    let mut parsed_json: Value = serde_json::from_str(&cleaned_response).map_err(|e| {
-        println!("Failed to parse Gemini response as JSON: {}", e);
-        println!("Raw response: {}", response_text);
-        println!("Cleaned response: {}", cleaned_response);
+    let mut parsed_json: Value = serde_json::from_str(&cleaned_response).map_err(|_| {
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
     // Concise pretty print to terminal
     if let Some(dishes) = parsed_json.get("dishes").and_then(|d| d.as_array()) {
-        println!("\n🍳 NekoChef's Recipe Suggestions (summary):");
-        println!("========================================");
-
-        let trunc = |s: &str, max: usize| {
-            let mut out = s.chars().take(max).collect::<String>();
-            if s.chars().count() > max {
-                out.push_str("...");
-            }
-            out
-        };
-
-        for (i, dish) in dishes.iter().enumerate() {
-            let name = dish
-                .get("dishName")
-                .and_then(|n| n.as_str())
-                .map(|s| trunc(s, 80))
-                .unwrap_or("(missing name)".to_string());
-            let simplified = dish
-                .get("simplified")
-                .and_then(|n| n.as_str())
-                .map(|s| trunc(s, 40))
-                .unwrap_or("(missing simplified)".to_string());
-
-            let step_count = dish
-                .get("preparationSteps")
-                .and_then(|s| s.as_array())
-                .map(|s| s.len())
-                .unwrap_or(0);
-
-            let portion_keys = dish
-                .get("portions")
-                .and_then(|p| p.as_object())
-                .map(|m| {
-                    let keys: Vec<String> = m.keys().take(5).cloned().collect();
-                    let mut joined = keys.join(", ");
-                    if m.len() > 5 {
-                        joined.push_str(", ...");
-                    }
-                    joined
-                })
-                .unwrap_or_else(|| "".to_string());
-
-            println!(
-                "{}. {} \n simplified: {} \n steps: {} \n portions: {}",
-                i + 1,
-                name,
-                simplified,
-                step_count,
-                portion_keys
-            );
+        for _dish in dishes.iter() {
         }
-        println!("========================================\n");
-    } else {
-        println!("FAILED TO PARSE DISHES FROM RESPONSE");
     }
 
     // Attempt to fetch images for each dish and add to response
@@ -349,14 +263,9 @@ Do not add extra text outside the JSON object.
                 match get_one_image(&simplified).await {
                     Ok(Some(image_url)) => {
                         dish["image_url"] = Value::String(image_url);
-                        println!("  ✓ Image fetched for '{}'", simplified);
                     }
-                    Ok(None) => {
-                        println!("  ⚠ No image found for '{}'", simplified);
-                    }
-                    Err(e) => {
-                        println!("  ✗ Error fetching image for '{}': {}", simplified, e);
-                    }
+                    Ok(None) => {}
+                    Err(_) => {}
                 }
             }
         }
@@ -369,6 +278,7 @@ Do not add extra text outside the JSON object.
 }
 
 // 3. Better response validation
+#[allow(dead_code)]
 fn validate_recipe_response(json: &Value) -> bool {
     if let Some(dishes) = json.get("dishes").and_then(|d| d.as_array()) {
         if dishes.len() != 3 {

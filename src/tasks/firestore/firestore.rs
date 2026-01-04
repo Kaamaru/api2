@@ -128,13 +128,9 @@ pub async fn firestore_get_users_and_schedules(
 
 pub async fn handle_get_data(State(firebase_config): State<FirebaseConfig>) {
     let url = format!("{}/users", firebase_config.firestore_url());
-    println!("{}", url);
 
     let response = reqwest::get(&url).await.expect("Failed to send request");
-    println!(
-        "{:?}",
-        response.text().await.expect("Failed to read response text")
-    );
+    let _ = response.text().await.expect("Failed to read response text");
 }
 pub async fn handle_post_feedback(
     headers: HeaderMap,
@@ -143,11 +139,7 @@ pub async fn handle_post_feedback(
 ) {
     let url = format!("{}/feedback", firebase_config.firestore_url());
 
-    println!("{}!", payload.fields.message.stringValue);
-
     let apirequestbody = serde_json::to_string(&payload).expect("Failed to serialize payload");
-
-    println!("Request Body: {:?}", apirequestbody);
 
     call_firestore_post_feedback(&apirequestbody, &url).await;
 }
@@ -162,16 +154,8 @@ async fn call_firestore_post_feedback(apirequestbody: &String, firestore_url: &s
         .await;
 
     match response {
-        Ok(resp) => {
-            if resp.status().is_success() {
-                println!("Feedback posted successfully!");
-            } else {
-                println!("Failed to post feedback: {}", resp.status());
-            }
-        }
-        Err(e) => {
-            println!("Error posting feedback: {}", e);
-        }
+        Ok(resp) => {}
+        Err(e) => {}
     }
 }
 pub async fn handle_get_feedback_devread(
@@ -194,9 +178,6 @@ pub async fn handle_get_feedback_devread(
                 },
             },
         });
-    println!("name: {}", response.fields.name.stringValue);
-    println!("message: {}", response.fields.message.stringValue);
-    println!("status: {}", response.fields.status.stringValue);
     uuid
 }
 

@@ -4,6 +4,8 @@ use axum::{
     Router,
 };
 use reqwest::Method;
+use std::net::SocketAddr;
+use tokio::net::TcpListener;
 use tokio::task;
 use tower_http::cors::{Any, CorsLayer};
 
@@ -62,7 +64,10 @@ async fn main() {
 
     println!("{}", firebase_config.firestore_url());
     keycrypt();
-    println!("\n\n{:?}\n\n", firestore_get_notified_users_schedules().await);
+    println!(
+        "\n\n{:?}\n\n",
+        firestore_get_notified_users_schedules().await
+    );
     do_expiration_mail().await;
 
     let cors = CorsLayer::new()
@@ -110,7 +115,7 @@ async fn main() {
         // .route("/get_user_notify", get(firestore_get_notified_users_schedules));
         ;
 
-    let app = Router::new()
+    let app: Router = Router::new()
         .route("/", get(handle_get).post(handle_post))
         .route("/chat", post(chat_handler_with_retry))
         .route("/user/{uid}", get(handle_get_user_by_uid))
@@ -127,9 +132,15 @@ async fn main() {
         .layer(cors)
         .with_state(firebase_config);
 
-    let listener = tokio::net::TcpListener::bind("localhost:4444")
-        .await
-        .unwrap();
+    let port: u16 = std::env::var("PORT")
+        .unwrap_or_else(|_| "4444".to_string())
+        .parse()
+        .unwrap_or(4444);
+
+    let address = SocketAddr::from(([0, 0, 0, 0], port));
+    let listener = tokio::net::TcpListener::bind(address).await.unwrap();
+
+    println!("Listening on {}", address);
     axum::serve(listener, app).await.unwrap();
 }
 

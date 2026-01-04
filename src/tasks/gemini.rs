@@ -1,4 +1,4 @@
-use crate::firebase::GEMINI_API_KEY;
+use crate::firebase::GeminiConfig;
 use crate::structures::models::{
     ChatRequest, ChatResponse, GeminiContent, GeminiPart, GeminiRequest, GeminiResponse,
     GenerationConfig, SystemInstruction,
@@ -9,11 +9,9 @@ use reqwest::Client;
 use serde_json::Value;
 
 pub async fn call_gemini_api(gemini_request: &GeminiRequest) -> Result<String, reqwest::Error> {
-    let api_key = std::env::var("GEMINI_API_KEY")
-        .unwrap_or_else(|_| panic!("GEMINI_API_KEY not set in environment"));
+    let api_key = GeminiConfig::from_env().api_key;
 
-    let url =
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
+    let url = GeminiConfig::from_env().base_url;
 
     let client = Client::new();
 
@@ -103,7 +101,7 @@ pub async fn chat_handler_with_retry(
 // 2. Separate the generation logic
 async fn try_generate_recipes(payload: &ChatRequest) -> Result<Value, StatusCode> {
     // ... your existing generation logic here ...
-    let api_key = GEMINI_API_KEY;
+    let api_key = GeminiConfig::from_env().api_key;
 
     // Extract prompt text
     let prompt_text = match &payload.prompt {
@@ -192,8 +190,7 @@ Do not add extra text outside the JSON object.
     };
 
     let client = Client::new();
-    let url =
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
+    let url = GeminiConfig::from_env().base_url;
 
     println!("Sending request to: {}", url);
     println!("With API key: {}", api_key);

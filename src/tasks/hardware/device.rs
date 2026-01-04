@@ -27,16 +27,12 @@ async fn get_userid_from_hardware(
     hardware_secrets: &str,
     firebase_config: &FirebaseConfig,
 ) -> Result<String, String> {
-
-    println!("Getting userid for hardware_secrets: {}", hardware_secrets);
     let client = Client::new();
     let device_url = format!(
         "{}/devices/{}",
         firebase_config.firestore_url(),
         hardware_secrets
     );
-    println!("Device URL: {}", device_url);
-
 
     let response = client
         .get(&device_url)
@@ -56,8 +52,6 @@ async fn get_userid_from_hardware(
     let device_doc: serde_json::Value = serde_json::from_str(&body)
         .map_err(|e| format!("Failed to parse device document: {}", e))?;
 
-    println!("Device document: {}", body);
-    
     // Extract userid from fields.userid.stringValue structure
     let userid = device_doc
         .get("fields")
@@ -67,7 +61,6 @@ async fn get_userid_from_hardware(
         .map(|s| s.to_string())
         .ok_or_else(|| "userid field not found in device".to_string())?;
 
-    println!("✅ Found userid: {}", userid);
     Ok(userid)
 }
 
@@ -153,9 +146,6 @@ pub async fn connect_device_to_user(
     State(firebase_config): State<FirebaseConfig>,
     Json(payload): Json<HardwareAuthenticate>,
 ) -> impl IntoResponse {
-    println!("Connecting device for user: {}", payload.userid);
-    println!("Connecting device for hardware: {}", hardware_secrets);
-    
     let client = Client::new();
     let patch_url = format!(
         "{}/devices/{}?updateMask.fieldPaths=userid",

@@ -7,6 +7,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Json},
 };
+use chrono::TimeZone;
 use reqwest::Client;
 use serde_json::json;
 use serde::Serialize;
@@ -160,6 +161,7 @@ pub async fn firestore_get_notify_schedule_all(
                             let expiry = detail.get("expiry").and_then(|e| e.get("stringValue")).and_then(|s| s.as_str()).unwrap_or("").to_string();
                             let uid = detail.get("uid").and_then(|u| u.get("stringValue")).and_then(|s| s.as_str()).unwrap_or("").to_string();
                             let category = detail.get("category").and_then(|c| c.get("stringValue")).and_then(|s| s.as_str()).map(|s| s.to_string());
+                            let quantity = detail.get("quantity").and_then(|c| c.get("stringValue")).and_then(|s| s.as_str()).map(|s| s.to_string());
 
                             notified_schedules.push(Schedule {
                                 name,
@@ -169,6 +171,7 @@ pub async fn firestore_get_notify_schedule_all(
                                 uid,
                                 notify,
                                 category,
+                                quantity,
                             });
                         }
                     }
@@ -229,9 +232,8 @@ pub async fn firestore_get_notified_users_schedules() -> Result<Vec<serde_json::
                             let time_until_expiry = expiry_date - now;
                             time_until_expiry.num_days() <= 3 && time_until_expiry.num_seconds() >= 0
                         } else if let Ok(date) = chrono::NaiveDate::parse_from_str(&expiry_str, "%Y-%m-%d") {
-                            let datetime = chrono::DateTime::<chrono::Utc>::from_utc(
-                                chrono::NaiveDateTime::new(date, chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap()),
-                                chrono::Utc
+                            let datetime = chrono::Utc.from_utc_datetime(
+                                &chrono::NaiveDateTime::new(date, chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap())
                             );
                             let time_until_expiry = datetime - now;
                             time_until_expiry.num_days() <= 3 && time_until_expiry.num_seconds() >= 0
@@ -260,6 +262,7 @@ pub async fn firestore_get_notified_users_schedules() -> Result<Vec<serde_json::
                                     .unwrap_or_default(),
                                 notify,
                                 category: detail.category.as_ref().map(|c| c.stringValue.clone()),
+                                quantity: detail.quantity.as_ref().map(|q| q.stringValue.clone()),
                             });
                         }
                     }

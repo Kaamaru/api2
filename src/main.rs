@@ -39,7 +39,7 @@ use crate::{
         firestore::{firestore::*, modify::*, notify::*},
         gemini::*,
         getimage::*,
-        hardware::device::*,
+        hardware::{device::*, tractor::tract_test},
         timecheck,
     },
     tools::{imagebb, keycrypt},
@@ -61,7 +61,7 @@ async fn main() {
     task::spawn(async {
         timeloop().await;
     });
-
+// tract_test();
     keycrypt();
     do_expiration_mail().await;
 
@@ -115,7 +115,7 @@ async fn main() {
         .route("/chat", post(chat_handler_with_retry))
         .route("/user/{uid}", get(handle_get_user_by_uid))
         .route("/data", get(handle_get_data))
-        .route("/echo", get(async move || "Echo!"))
+    .route("/echo", get(async move ||{ println!("echo!");"Echo!"}))
         .route("/user-summary", get(handle_get_user_summary))
         .route("/checktime", get(firestore_get_users_and_schedules))
         .nest("/feedbacks", feedbacks_routes)

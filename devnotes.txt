@@ -7,3 +7,6 @@ send from device
 get by hardware secrets -> userid
 
 by userid       
+
+
+i should rework on the "many at a time (wtf is the word)" delete and notify request

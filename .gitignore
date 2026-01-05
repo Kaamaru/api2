@@ -4,4 +4,4 @@
 Secrets*.toml
 .env
 /uploads
-/models
+/models/private

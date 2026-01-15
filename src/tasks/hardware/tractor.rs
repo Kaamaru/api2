@@ -6,11 +6,14 @@ pub fn tract_test() {
     let model = RunnableOnnxModel::create_tract_model(MODEL_PATH);
 
     let image_list = vec![
-        create_input_image("assets/apple.jpg"),
-        create_input_image("assets/arch-linux.jpg"),
+        create_input_image("assets/tomato.jpg"),
+        create_input_image("assets/lettuce.jpg"),
     ];
+    println!("Running model on test images...");
     if let Ok(result) = model.run_model(image_list) {
         println!("{:?}", result);
+    }else {
+        println!("Failed to run model");
     }
 }
 

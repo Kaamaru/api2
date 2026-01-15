@@ -80,6 +80,8 @@ pub struct FirestoreScheduleDetail {
     pub notify: Option<FirestoreBooleanField>,
     #[serde(default)]
     pub category: Option<FirestoreStringField>,
+    #[serde(default)]
+    pub quantity: Option<FirestoreStringField>,
 }
 
 #[derive(Serialize, Debug, Clone)]
@@ -91,6 +93,7 @@ pub struct Schedule {
     pub uid: String,
     pub notify: bool,
     pub category: Option<String>,
+    pub quantity: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -117,8 +120,8 @@ pub struct RecipeField {
     pub uid: Option<FirestoreStringField>,
     #[serde(default)]
     pub image_url: Option<FirestoreStringField>,
-
-   
+    #[serde(default)]
+    pub quantity: Option<FirestoreStringField>,
 }
 
 // Updated UserFields to include username and better recipe handling
@@ -194,6 +197,7 @@ pub struct Recipe {
     pub steps: Vec<String>,
     pub time: Option<String>,
     pub image_url: Option<String>,
+    pub quantity: Option<String>,
 }
 
 // Hardware struct for API response
@@ -221,6 +225,7 @@ pub struct FirestoreChangeSchedule {
     pub expiry: Option<String>,
     pub notify: Option<bool>,
     pub category: Option<String>,
+    pub quantity: Option<String>,
 }
 #[derive(serde::Deserialize)]
 pub struct AddScheduleRequest {
@@ -230,6 +235,7 @@ pub struct AddScheduleRequest {
     pub expiry: String,
     pub notify: bool,
     pub category: Option<String>,
+    pub quantity: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -239,4 +245,5 @@ pub struct AddRecipeRequest {
     pub steps: Vec<String>,
     pub time: Option<String>,
     pub image_url: Option<String>,
+    pub quantity: Option<String>,
 }

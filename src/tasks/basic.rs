@@ -12,7 +12,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 
 pub async fn handle_post(
-    headers: HeaderMap,
+    _headers: HeaderMap,
     Json(payload): Json<TheRequest>,
 ) -> Result<AxumJson<TheResponse>, StatusCode> {
     let _ = checkvalid(payload.text);

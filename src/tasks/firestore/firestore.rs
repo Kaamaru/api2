@@ -51,11 +51,13 @@ pub async fn firestore_get_users_and_schedules(
                         for (_key, item) in schedules.map_value.fields {
                             let detail = item.map_value.fields;
 
-                            let date_str = detail.date
+                            let date_str = detail
+                                .date
                                 .as_ref()
                                 .map(|d| d.stringValue.as_str())
                                 .unwrap_or("");
-                            let time_str = detail.time
+                            let time_str = detail
+                                .time
                                 .as_ref()
                                 .map(|t| t.stringValue.as_str())
                                 .unwrap_or("");
@@ -84,23 +86,28 @@ pub async fn firestore_get_users_and_schedules(
                             println!("time_difference: {:?}", time_diff);
 
                             schedule_list.push(Schedule {
-                                name: detail.name
+                                name: detail
+                                    .name
                                     .as_ref()
                                     .map(|n| n.stringValue.clone())
                                     .unwrap_or_default(),
-                                time: detail.time
+                                time: detail
+                                    .time
                                     .as_ref()
                                     .map(|t| t.stringValue.clone())
                                     .unwrap_or_default(),
-                                date: detail.date
+                                date: detail
+                                    .date
                                     .as_ref()
                                     .map(|d| d.stringValue.clone())
                                     .unwrap_or_default(),
-                                expiry: detail.expiry
+                                expiry: detail
+                                    .expiry
                                     .as_ref()
                                     .map(|e| e.stringValue.clone())
                                     .unwrap_or_default(),
-                                uid: detail.uid
+                                uid: detail
+                                    .uid
                                     .as_ref()
                                     .map(|u| u.stringValue.clone())
                                     .unwrap_or_default(),
@@ -109,10 +116,11 @@ pub async fn firestore_get_users_and_schedules(
                                     .as_ref()
                                     .map(|n| n.booleanValue)
                                     .unwrap_or(false),
-                                category: detail
-                                    .category
+                                category: detail.category.as_ref().map(|c| c.stringValue.clone()),
+                                quantity: detail
+                                    .quantity
                                     .as_ref()
-                                    .map(|c| c.stringValue.clone()),
+                                    .map(|q| q.stringValue.clone()),
                             });
                         }
                     }
@@ -133,7 +141,7 @@ pub async fn handle_get_data(State(firebase_config): State<FirebaseConfig>) {
     let _ = response.text().await.expect("Failed to read response text");
 }
 pub async fn handle_post_feedback(
-    headers: HeaderMap,
+    _headers: HeaderMap,
     State(firebase_config): State<FirebaseConfig>,
     Json(payload): Json<FeedbackDocument>,
 ) {
@@ -221,16 +229,14 @@ pub async fn handle_get_user_by_uid(
         }
     };
 
-    println!("1");
     if !response.status().is_success() {
         eprintln!("⚠️ Firestore responded with status: {}", response.status());
         return Json(json!({ "error": "User not found or invalid UID" })).into_response();
     }
-    println!("2");
 
     let body = match response.text().await {
         Ok(body) => {
-            println!("{:?}", body);
+            // println!("{:?}", body);
             body
         }
         Err(e) => {
@@ -238,7 +244,6 @@ pub async fn handle_get_user_by_uid(
             return Json(json!({ "error": "User not found or invalid UID1" })).into_response();
         }
     };
-    println!("{}", body);
     let firestore_response = match serde_json::from_str(&body) {
         Ok(data) => data,
         Err(e) => {
@@ -260,7 +265,8 @@ pub async fn handle_get_user_by_uid(
             "ingredients": recipe.ingredients,
             "steps": recipe.steps,
             "time": recipe.time,
-            "image_url": recipe.image_url
+            "image_url": recipe.image_url,
+            "quantity": recipe.quantity
 
         })).collect::<Vec<_>>(),
         "schedules": user.schedules.into_iter().map(|schedule| json!({
@@ -269,7 +275,8 @@ pub async fn handle_get_user_by_uid(
             "date": schedule.date,
             "expiry": schedule.expiry,
             "uid": schedule.uid,
-            "category": schedule.category
+            "category": schedule.category,
+            "quantity": schedule.quantity
 
         })).collect::<Vec<_>>(),
         "hardware": user.hardware.map(|hw| json!({
@@ -323,23 +330,28 @@ fn convert_firestore_schedules_to_clean(schedule_map: FirestoreMapField) -> Vec<
         let schedule_detail = schedule_item.map_value.fields;
 
         // Safely extract optional string fields with defaults
-        let name = schedule_detail.name
+        let name = schedule_detail
+            .name
             .as_ref()
             .map(|n| n.stringValue.clone())
             .unwrap_or_default();
-        let time = schedule_detail.time
+        let time = schedule_detail
+            .time
             .as_ref()
             .map(|t| t.stringValue.clone())
             .unwrap_or_default();
-        let date = schedule_detail.date
+        let date = schedule_detail
+            .date
             .as_ref()
             .map(|d| d.stringValue.clone())
             .unwrap_or_default();
-        let expiry = schedule_detail.expiry
+        let expiry = schedule_detail
+            .expiry
             .as_ref()
             .map(|e| e.stringValue.clone())
             .unwrap_or_default();
-        let uid = schedule_detail.uid
+        let uid = schedule_detail
+            .uid
             .as_ref()
             .map(|u| u.stringValue.clone())
             .unwrap_or_default();
@@ -348,7 +360,14 @@ fn convert_firestore_schedules_to_clean(schedule_map: FirestoreMapField) -> Vec<
             .as_ref()
             .map(|n| n.booleanValue)
             .unwrap_or(false);
-        let category = schedule_detail.category.as_ref().map(|c| c.stringValue.clone());
+        let category = schedule_detail
+            .category
+            .as_ref()
+            .map(|c| c.stringValue.clone());
+        let quantity = schedule_detail
+            .quantity
+            .as_ref()
+            .map(|c| c.stringValue.clone());
 
         // Check if schedule is soon (within next 30 minutes)
 
@@ -360,6 +379,7 @@ fn convert_firestore_schedules_to_clean(schedule_map: FirestoreMapField) -> Vec<
             uid,
             notify,
             category,
+            quantity,
         });
     }
 
@@ -373,47 +393,43 @@ fn convert_firestore_recipes_to_clean(recipe_map: FirestoreRecipeMapField) -> Ve
     for (recipe_id, recipe_item) in recipe_map.map_value.fields {
         let recipe_fields = recipe_item.map_value.fields;
 
-        let name = recipe_fields.name
+        let name = recipe_fields
+            .name
             .as_ref()
             .map(|n| n.stringValue.clone())
             .unwrap_or_default();
-        let time = recipe_fields.time
-            .as_ref()
-            .map(|t| t.stringValue.clone());
-        let image_url = recipe_fields.image_url
+        let time = recipe_fields.time.as_ref().map(|t| t.stringValue.clone());
+        let image_url = recipe_fields
+            .image_url
             .as_ref()
             .map(|t| t.stringValue.clone());
 
         // Extract ingredients array safely
-        let ingredients = recipe_fields.ingredients
+        let ingredients = recipe_fields
+            .ingredients
             .as_ref()
             .and_then(|ing| ing.array_value.as_ref())
-            .map(|a| {
-                a.values
-                    .iter()
-                    .map(|v| v.stringValue.clone())
-                    .collect()
-            })
+            .map(|a| a.values.iter().map(|v| v.stringValue.clone()).collect())
             .unwrap_or_default();
 
         // Extract steps array safely
-        let steps = recipe_fields.steps
+        let steps = recipe_fields
+            .steps
             .as_ref()
             .and_then(|st| st.array_value.as_ref())
-            .map(|a| {
-                a.values
-                    .iter()
-                    .map(|v| v.stringValue.clone())
-                    .collect()
-            })
+            .map(|a| a.values.iter().map(|v| v.stringValue.clone()).collect())
             .unwrap_or_default();
 
-        let uid = recipe_fields.uid
+        let uid = recipe_fields
+            .uid
             .as_ref()
             .map(|u| u.stringValue.clone())
             .unwrap_or_default();
 
-      
+        let quantity = recipe_fields
+            .quantity
+            .as_ref()
+            .map(|q| q.stringValue.clone());
 
         recipes.push(Recipe {
             uid: recipe_id,
@@ -421,7 +437,8 @@ fn convert_firestore_recipes_to_clean(recipe_map: FirestoreRecipeMapField) -> Ve
             ingredients,
             steps,
             time,
-            image_url
+            image_url,
+            quantity,
         });
     }
 
@@ -522,7 +539,8 @@ pub async fn handle_get_user_summary(
                     );
 
                     if let Ok(recipe_fields) = result {
-                        let name = recipe_fields.name
+                        let name = recipe_fields
+                            .name
                             .as_ref()
                             .map(|n| n.stringValue.clone())
                             .unwrap_or_default();

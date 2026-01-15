@@ -95,7 +95,7 @@ pub async fn firestore_add_schedule(
         new_id
     );
     println!("PATCH URL: {}", patch_url);
-    // Build schedule fields with optional category
+    // Build schedule fields with optional category and quantity
     let mut schedule_fields = json!({
         "uid": { "stringValue": new_id.clone() },
         "name": { "stringValue": request.name },
@@ -103,7 +103,8 @@ pub async fn firestore_add_schedule(
         "date": { "stringValue": request.date },
         "expiry": { "stringValue": request.expiry },
         "notify": { "booleanValue": request.notify },
-        "category": { "stringValue": request.category.clone().unwrap_or_default() }  // default empty
+        "category": { "stringValue": request.category.clone().unwrap_or_default() },
+        "quantity": { "stringValue": request.quantity }
     });
 
     if let Some(category) = &request.category {
@@ -154,13 +155,16 @@ pub async fn firestore_add_schedule(
     // Optional: Return confirmation
     Json(json!({
         "success": true,
-        "message": format!("Schedwrwrwrwrwule '{}' added successfully", request.name),
+        "message": format!("Schedule '{}' added successfully", request.name),
         "schedule": {
+            "uid": new_id,
             "name": request.name,
             "time": request.time,
             "date": request.date,
             "expiry": request.expiry,
+            "quantity": request.quantity,
             "category": request.category,
+            "notify": request.notify,
         },
         "updated_at": chrono::Utc::now().to_rfc3339()
     }))
@@ -226,6 +230,14 @@ pub async fn firestore_add_recipe(
             .as_object_mut()
             .unwrap()
             .insert("image_url".to_string(), json!({"stringValue": image_url}));
+    }
+
+    // Add quantity field if provided
+    if let Some(quantity) = &request.quantity {
+        recipe_fields
+            .as_object_mut()
+            .unwrap()
+            .insert("quantity".to_string(), json!({"stringValue": quantity}));
     }
 
     // Final Firestore document structure - FIXED

@@ -6,7 +6,7 @@ use crate::{
     firebase::FirebaseConfig,
     structures::structs::{FeedbackDocument, FeedbackFields, FirestoreStringField},
 };
-use chrono;
+use chrono::{self, TimeZone};
 use lettre::message::{header::ContentType, Mailbox, Message};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{SmtpTransport, Transport};
@@ -53,9 +53,8 @@ pub async fn do_expiration_mail() {
                     date.with_timezone(&chrono::Utc)
                 } else if let Ok(date) = chrono::NaiveDate::parse_from_str(expiry_str, "%Y-%m-%d") {
                     // Parse as date only and convert to datetime at midnight
-                    chrono::DateTime::<chrono::Utc>::from_utc(
-                        chrono::NaiveDateTime::new(date, chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap()),
-                        chrono::Utc
+                    chrono::Utc.from_utc_datetime(
+                        &chrono::NaiveDateTime::new(date, chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap())
                     )
                 } else {
                     continue;

@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html><head>
+<meta http-equiv="content-type" content="text/html; charset=UTF-8">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CookFetch - Kitchen Manager</title>
+    <style>
+        body { font-family: sans-serif; background: white; padding: 20px; }
+        .container { max-width: 500px; margin: 0 auto; border: 1px solid #ccc; padding: 20px; }
+        .header { text-align: center; margin-bottom: 20px; }
+        h1 { font-size: 24px; margin-bottom: 5px; }
+        .tagline { color: #666; font-size: 12px; }
+        .user-badge { background: #f5f5f5; border-left: 2px solid #333; padding: 10px; margin-bottom: 15px; font-size: 12px; }
+        .section { margin-bottom: 15px; padding-bottom: 15px; border-bottom: 1px solid #ddd; }
+        .section:last-child { border-bottom: none; }
+        .section-title { font-size: 11px; font-weight: bold; text-transform: uppercase; margin-bottom: 10px; }
+        form { display: flex; flex-direction: column; gap: 8px; }
+        input[type='text'], input[type='number'] { padding: 8px; border: 1px solid #999; font-size: 12px; }
+        input[type='submit'], button { padding: 8px; border: none; cursor: pointer; font-weight: bold; font-size: 12px; }
+        .btn-primary { background: #333; color: white; }
+        .btn-primary:hover { background: #000; }
+        .btn-danger { background: #666; color: white; }
+        .btn-danger:hover { background: #333; }
+        .btn-success { background: #666; color: white; }
+        .btn-success:hover { background: #333; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🍳 CookFetch</h1>
+            <p class="tagline">Kitchen Ingredient Manager</p>
+        </div>
+        
+        <div class="user-badge">
+            <strong>Connected as:</strong> <span>GOahOpwSRMhMDeYTLx8GGWDJRQ13</span>
+        </div>
+            
+        <div class="section">
+            <div class="section-title">🔐 Authentication</div>
+            <form action="/auth" method="POST">
+                <input type="text" name="user_id" placeholder="Enter User ID" required="">
+                <input type="submit" value="Connect Device" class="btn-primary">
+            </form>
+        </div>
+        
+        <div class="section">
+            <div class="section-title">📷 Camera</div>
+            <form action="/send_photo" method="POST" style="margin-bottom: 10px;">
+                <input type="submit" value="📸 Capture &amp; Send" class="btn-success">
+            </form>
+            <form action="/camera_config" method="GET">
+                <input type="submit" value="⚙️ Camera Settings" class="btn-primary">
+            </form>
+        </div>
+        
+        <div class="section">
+            <div class="section-title">⚙️ System</div>
+            <form action="/reset" method="POST">
+                <input type="submit" value="🔄 Reset Connection" class="btn-danger">
+            </form>
+        </div>
+    </div>
+
+
+        </body></html>

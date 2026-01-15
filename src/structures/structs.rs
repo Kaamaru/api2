@@ -131,6 +131,7 @@ pub struct UserFields {
     pub username: Option<FirestoreStringField>,
     pub schedules: Option<FirestoreMapField>,
     pub savedrecipes: Option<FirestoreRecipeMapField>,
+    pub hardware: Option<FirestoreHardwareMapField>,
 }
 
 // New struct specifically for saved recipes map
@@ -138,6 +139,26 @@ pub struct UserFields {
 pub struct FirestoreRecipeMapField {
     #[serde(rename = "mapValue")]
     pub map_value: FirestoreRecipeInnerMap,
+}
+
+// New struct for hardware map field (simpler structure - single map with arrays)
+#[derive(Serialize, Deserialize, Debug)]
+pub struct FirestoreHardwareMapField {
+    #[serde(rename = "mapValue")]
+    pub map_value: HardwareField,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct HardwareField {
+    pub fields: HardwareFieldsInner,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct HardwareFieldsInner {
+    #[serde(default)]
+    pub devices: Option<FirestoreArrayField>,
+    #[serde(default)]
+    pub requests: Option<FirestoreArrayField>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -179,6 +200,13 @@ pub struct Recipe {
     pub quantity: Option<String>,
 }
 
+// Hardware struct for API response
+#[derive(Serialize, Debug, Clone)]
+pub struct Hardware {
+    pub devices: Vec<String>,
+    pub requests: Vec<String>,
+}
+
 // Clean structs for API response
 #[derive(Serialize, Debug)]
 pub struct User {
@@ -186,6 +214,7 @@ pub struct User {
     pub email: Option<String>,
     pub schedules: Vec<Schedule>,
     pub saved_recipes: Vec<Recipe>,
+    pub hardware: Option<Hardware>,
 }
 
 #[derive(Serialize)]

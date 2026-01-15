@@ -39,7 +39,7 @@ use crate::{
         firestore::{firestore::*, modify::*, notify::*},
         gemini::*,
         getimage::*,
-        hardware::{device::*, tractor::tract_test},
+        hardware::{device::*, tractor::tract_test,requests::*},
         timecheck,
     },
     tools::{imagebb, keycrypt},
@@ -96,12 +96,19 @@ async fn main() {
         .route("/schedules/{uuid}", patch(firestore_add_schedule))
         .route("/recipes/{uuid}", patch(firestore_add_recipe));
 
-    let     hardware = Router::new()
+    let hardware = Router::new()
         .route("/connect/{hardware_secrets}", post(connect_device_to_user))
         .route(
             "/send_image/{hardware_secrets}",
             post(recieve_image_bytes_esp32),
+        ).route(
+            "/devices/{userid}/{hardware_secrets}",
+            post(add_device_record),
+        ).route(
+            "/requests/{userid}/{hardware_secrets}",
+            post(add_request_record),
         );
+
 
     let notify = Router::new()
         .route("/on/{uuid}/{schedule_id}", patch(firestore_set_notify_on))

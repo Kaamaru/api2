@@ -4,7 +4,7 @@ use crate::{
         FeedbackDocument, FeedbackFields, FirestoreMapField, FirestoreRecipeMapField,
         FirestoreScheduleDetail, FirestoreScheduleItem, FirestoreSingleUserResponse,
         FirestoreStringField, FirestoreUserDocument, FirestoreUserResponse, Recipe, RecipeField,
-        Schedule, User,
+        Schedule, User, Hardware, FirestoreHardwareMapField, HardwareField,
     },
 };
 use axum::{
@@ -271,7 +271,11 @@ pub async fn handle_get_user_by_uid(
             "uid": schedule.uid,
             "category": schedule.category
 
-        })).collect::<Vec<_>>()
+        })).collect::<Vec<_>>(),
+        "hardware": user.hardware.map(|hw| json!({
+            "devices": hw.devices,
+            "requests": hw.requests
+        })).unwrap_or(json!(null))
     }))
     .into_response()
 }
@@ -298,11 +302,15 @@ fn convert_firestore_user_to_clean(firestore_user: FirestoreSingleUserResponse, 
         Vec::new()
     };
 
+    // Convert hardware
+    let hardware = fields.hardware.map(|hardware_map| convert_firestore_hardware_to_clean(hardware_map));
+
     User {
         username,
         email,
         schedules,
         saved_recipes,
+        hardware,
     }
 }
 
@@ -418,6 +426,29 @@ fn convert_firestore_recipes_to_clean(recipe_map: FirestoreRecipeMapField) -> Ve
     }
 
     recipes
+}
+
+// Helper function to convert Firestore hardware to clean format
+fn convert_firestore_hardware_to_clean(hardware_map: FirestoreHardwareMapField) -> Hardware {
+    let hardware_fields = hardware_map.map_value.fields;
+
+    // Extract devices array safely
+    let devices = hardware_fields
+        .devices
+        .as_ref()
+        .and_then(|dev| dev.array_value.as_ref())
+        .map(|a| a.values.iter().map(|v| v.stringValue.clone()).collect())
+        .unwrap_or_default();
+
+    // Extract requests array safely
+    let requests = hardware_fields
+        .requests
+        .as_ref()
+        .and_then(|req| req.array_value.as_ref())
+        .map(|a| a.values.iter().map(|v| v.stringValue.clone()).collect())
+        .unwrap_or_default();
+
+    Hardware { devices, requests }
 }
 
 // Helper function to check if schedule is soon (reuse your existing logic)

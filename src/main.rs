@@ -106,7 +106,7 @@ async fn main() {
             post(add_device_record).delete(delete_device_records),
         ).route(
             "/requests/{userid}",
-            post(add_request_record).delete(delete_request_records),
+            post(add_request_record).delete(delete_request_records).patch(accept_request_record),
         ).route(
             "/{userid}",
             get(get_hardware_records),

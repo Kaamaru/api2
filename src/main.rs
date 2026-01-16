@@ -102,11 +102,14 @@ async fn main() {
             "/send_image/{hardware_secrets}",
             post(recieve_image_bytes_esp32),
         ).route(
-            "/devices/{userid}/{hardware_secrets}",
-            post(add_device_record),
+            "/devices/{userid}",
+            post(add_device_record).delete(delete_device_records),
         ).route(
-            "/requests/{userid}/{hardware_secrets}",
-            post(add_request_record),
+            "/requests/{userid}",
+            post(add_request_record).delete(delete_request_records),
+        ).route(
+            "/{userid}",
+            get(get_hardware_records),
         );
 
 

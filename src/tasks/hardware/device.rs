@@ -182,6 +182,54 @@ pub async fn connect_device_to_user(
             .into_response();
     }
 
+    // Add the hardware_secrets to the user's hardware.requests array
+    let user_patch_url = format!(
+        "{}/users/{}?updateMask.fieldPaths=hardware.requests",
+        firebase_config.firestore_url(),
+        payload.userid
+    );
+
+    let user_firestore_payload = json!({
+        "fields": {
+            "hardware": {
+                "mapValue": {
+                    "fields": {
+                        "requests": {
+                            "arrayValue": {
+                                "values": [
+                                    { "stringValue": hardware_secrets.clone() }
+                                ]
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    let user_resp = match client.patch(&user_patch_url).json(&user_firestore_payload).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("Failed to PATCH user hardware requests: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "Failed to add device to user hardware requests" })),
+            )
+                .into_response();
+        }
+    };
+
+    if !user_resp.status().is_success() {
+        let status = user_resp.status();
+        let body = user_resp.text().await.unwrap_or_else(|_| "".to_string());
+        eprintln!("User hardware PATCH failed: {} - {}", status, body);
+        return (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": "Failed to add device to user hardware", "status": status.as_u16() })),
+        )
+            .into_response();
+    }
+
     (
         StatusCode::OK,
         Json(json!({

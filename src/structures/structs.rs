@@ -104,6 +104,7 @@ pub struct FirestoreArrayField {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct FirestoreArrayValues {
+    #[serde(default)]
     pub values: Vec<FirestoreStringField>,
 }
 #[derive(Serialize, Deserialize, Debug, Clone)]

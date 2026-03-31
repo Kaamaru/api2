@@ -707,6 +707,277 @@ pub async fn delete_grocery_item(
 
 // ===== Helper Functions =====
 
+// ===== CONVERSION Endpoint =====
+
+/// Convert checked grocery item to schedule
+pub async fn convert_grocery_to_schedule(
+    Path((userid, list_id, item_id)): Path<(String, String, String)>,
+    State(firebase_config): State<FirebaseConfig>,
+    Json(request): Json<crate::structures::structs::GroceryToScheduleRequest>,
+) -> impl IntoResponse {
+    println!(
+        "convert_grocery_to_schedule: user={}, list_id={}, item_id={}",
+        userid, list_id, item_id
+    );
+
+    let client = Client::new();
+
+    // STEP 1: Fetch the grocery item details
+    let get_url = format!("{}/users/{}", firebase_config.firestore_url(), userid);
+    let resp = match reqwest::get(&get_url).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("❌ Failed to fetch user: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Failed to fetch grocery item"})),
+            )
+                .into_response();
+        }
+    };
+
+    let text = match resp.text().await {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("❌ Failed to read response: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Failed to fetch grocery item"})),
+            )
+                .into_response();
+        }
+    };
+
+    // Parse and extract grocery item
+    let user_data = match serde_json::from_str::<serde_json::Value>(&text) {
+        Ok(data) => data,
+        Err(e) => {
+            eprintln!("❌ Failed to parse user data: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Failed to parse grocery item"})),
+            )
+                .into_response();
+        }
+    };
+
+    let item_data = user_data
+        .get("fields")
+        .and_then(|f| f.get("grocery"))
+        .and_then(|g| g.get("mapValue"))
+        .and_then(|m| m.get("fields"))
+        .and_then(|f| f.get(&list_id))
+        .and_then(|l| l.get("mapValue"))
+        .and_then(|m| m.get("fields"))
+        .and_then(|f| f.get("items"))
+        .and_then(|i| i.get("mapValue"))
+        .and_then(|m| m.get("fields"))
+        .and_then(|f| f.get(&item_id))
+        .and_then(|i| i.get("mapValue"))
+        .and_then(|m| m.get("fields"));
+
+    if item_data.is_none() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "Grocery item not found"})),
+        )
+            .into_response();
+    }
+
+    let item_map = item_data.unwrap();
+    let item_name = item_map
+        .get("name")
+        .and_then(|n| n.get("stringValue"))
+        .and_then(|s| s.as_str())
+        .unwrap_or("Unknown")
+        .to_string();
+
+    let item_quantity = item_map
+        .get("quantity")
+        .and_then(|q| q.get("stringValue"))
+        .and_then(|s| s.as_str())
+        .unwrap_or("1")
+        .to_string();
+
+    let item_unit = item_map
+        .get("unit")
+        .and_then(|u| u.get("stringValue"))
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    // STEP 2: Create a schedule with the grocery item details
+    let schedule_id = format!("schedule_{}", generate_unique_id());
+    let schedule_patch_url = format!(
+        "{}/users/{}?updateMask.fieldPaths=schedules.{}",
+        firebase_config.firestore_url(),
+        userid,
+        schedule_id
+    );
+
+    let quantity_str = if item_unit.is_empty() {
+        item_quantity.clone()
+    } else {
+        format!("{} {}", item_quantity, item_unit)
+    };
+
+    let schedule_payload = json!({
+        "fields": {
+            "schedules": {
+                "mapValue": {
+                    "fields": {
+                        schedule_id.clone(): {
+                            "mapValue": {
+                                "fields": {
+                                    "uid": { "stringValue": schedule_id.clone() },
+                                    "name": { "stringValue": item_name },
+                                    "quantity": { "stringValue": quantity_str },
+                                    "date": { "stringValue": request.date },
+                                    "time": { "stringValue": request.time },
+                                    "expiry": { "stringValue": request.expiry },
+                                    "category": { "stringValue": request.category.clone().unwrap_or_else(|| "grocery".to_string()) },
+                                    "notify": { "booleanValue": false }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    let schedule_response = match client
+        .patch(&schedule_patch_url)
+        .json(&schedule_payload)
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(e) => {
+            eprintln!("❌ Failed to create schedule: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Failed to create schedule"})),
+            )
+                .into_response();
+        }
+    };
+
+    if !schedule_response.status().is_success() {
+        let status = schedule_response.status();
+        let body = schedule_response.text().await.unwrap_or_default();
+        eprintln!("⚠️ Schedule creation failed: {}\n{}", status, body);
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "Failed to create schedule", "details": body})),
+        )
+            .into_response();
+    }
+
+    // STEP 3: Mark grocery item as checked
+    let grocery_patch_url = format!(
+        "{}/users/{}?updateMask.fieldPaths=grocery.{}.items.{}.checked",
+        firebase_config.firestore_url(),
+        userid,
+        list_id,
+        item_id
+    );
+
+    let mut item_fields = serde_json::Map::new();
+    item_fields.insert("checked".to_string(), json!({"booleanValue": true}));
+
+    let mut item_entry = serde_json::Map::new();
+    item_entry.insert(
+        item_id.clone(),
+        json!({"mapValue": {"fields": item_fields}}),
+    );
+
+    let items_value = json!({
+        "mapValue": {
+            "fields": serde_json::Value::Object(item_entry)
+        }
+    });
+
+    let mut list_fields = serde_json::Map::new();
+    list_fields.insert("items".to_string(), items_value);
+
+    let mut list_entry = serde_json::Map::new();
+    list_entry.insert(
+        list_id.clone(),
+        json!({"mapValue": {"fields": list_fields}}),
+    );
+
+    let grocery_payload = json!({
+        "fields": {
+            "grocery": {
+                "mapValue": {
+                    "fields": serde_json::Value::Object(list_entry)
+                }
+            }
+        }
+    });
+
+    let grocery_response = match client
+        .patch(&grocery_patch_url)
+        .json(&grocery_payload)
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(e) => {
+            eprintln!("❌ Failed to update grocery item: {}", e);
+            // Schedule was created but grocery item marking failed - not ideal but partial success
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": "Schedule created but failed to mark item as checked",
+                    "schedule_id": schedule_id
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    if !grocery_response.status().is_success() {
+        let status = grocery_response.status();
+        let body = grocery_response.text().await.unwrap_or_default();
+        eprintln!("⚠️ Grocery item update failed: {}\\n{}", status, body);
+        // Again, schedule created but grocery marker failed
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({
+                "error": "Schedule created but failed to mark item as checked",
+                "schedule_id": schedule_id,
+                "details": body
+            })),
+        )
+            .into_response();
+    }
+
+    // SUCCESS: Both operations completed
+    (
+        StatusCode::CREATED,
+        Json(json!({
+            "success": true,
+            "message": "Grocery item converted to schedule",
+            "schedule": {
+                "schedule_id": schedule_id,
+                "name": item_name,
+                "quantity": quantity_str,
+                "date": request.date,
+                "time": request.time,
+                "expiry": request.expiry,
+                "category": request.category.unwrap_or_else(|| "grocery".to_string())
+            },
+            "grocery_item": {
+                "item_id": item_id,
+                "checked": true
+            }
+        })),
+    )
+        .into_response()
+}
+
 /// Parse grocery items from Firestore data
 fn parse_grocery_items(list_data: &serde_json::Value) -> Vec<GroceryItem> {
     let mut items = Vec::new();

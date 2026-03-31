@@ -124,7 +124,8 @@ async fn main() {
         .route("/{userid}", get(get_grocery_lists).post(create_grocery_list))
         .route("/{userid}/{list_id}", get(get_grocery_list).delete(delete_grocery_list))
         .route("/{userid}/{list_id}/items", patch(add_grocery_item))
-        .route("/{userid}/{list_id}/items/{item_id}", patch(update_grocery_item).delete(delete_grocery_item));
+        .route("/{userid}/{list_id}/items/{item_id}", patch(update_grocery_item).delete(delete_grocery_item))
+        .route("/{userid}/{list_id}/items/{item_id}/to-schedule", post(convert_grocery_to_schedule));
 
     let app: Router = Router::new()
         .route("/", get(handle_get).post(handle_post))

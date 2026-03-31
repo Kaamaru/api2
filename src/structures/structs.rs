@@ -104,9 +104,10 @@ pub struct FirestoreArrayField {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct FirestoreArrayValues {
+    #[serde(default)]
     pub values: Vec<FirestoreStringField>,
 }
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct RecipeField {
     #[serde(default)]
     pub name: Option<FirestoreStringField>,
@@ -151,10 +152,11 @@ pub struct FirestoreHardwareMapField {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct HardwareField {
+    #[serde(default)]
     pub fields: HardwareFieldsInner,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct HardwareFieldsInner {
     #[serde(default)]
     pub devices: Option<FirestoreArrayField>,
@@ -176,6 +178,7 @@ pub struct FirestoreRecipeItem {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct FirestoreRecipeMap {
+    #[serde(default)]
     pub fields: RecipeField,
 }
 
@@ -247,6 +250,14 @@ pub struct AddRecipeRequest {
     pub time: Option<String>,
     pub image_url: Option<String>,
     pub quantity: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct GroceryToScheduleRequest {
+    pub date: String,       // YYYY-MM-DD
+    pub time: String,       // HH-MM
+    pub category: Option<String>,
+    pub expiry: String,     // YYYY-MM-DD
 }
 
 // ===== GROCERY SYSTEM STRUCTURES =====

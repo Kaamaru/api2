@@ -36,7 +36,7 @@ mod tools {
 use crate::{
     tasks::{
         basic,
-        firestore::{firestore::*, modify::*, notify::*},
+        firestore::{firestore::*, modify::*, notify::*, grocery::*},
         gemini::*,
         getimage::*,
         hardware::{device::*, tractor::tract_test,requests::*},
@@ -120,6 +120,12 @@ async fn main() {
         // .route("/get_user_notify", get(firestore_get_notified_users_schedules));
         ;
 
+    let grocery = Router::new()
+        .route("/{userid}", get(get_grocery_lists).post(create_grocery_list))
+        .route("/{userid}/{list_id}", get(get_grocery_list).delete(delete_grocery_list))
+        .route("/{userid}/{list_id}/items", patch(add_grocery_item))
+        .route("/{userid}/{list_id}/items/{item_id}", patch(update_grocery_item).delete(delete_grocery_item));
+
     let app: Router = Router::new()
         .route("/", get(handle_get).post(handle_post))
         .route("/chat", post(chat_handler_with_retry))
@@ -133,6 +139,7 @@ async fn main() {
         .nest("/delete", delete_datas)
         .nest("/add", add_datas)
         .nest("/notify", notify)
+        .nest("/grocery", grocery)
         .nest("/hardware", hardware)
         .layer(cors)
         .with_state(firebase_config);

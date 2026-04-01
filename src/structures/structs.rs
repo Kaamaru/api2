@@ -107,7 +107,7 @@ pub struct FirestoreArrayValues {
     #[serde(default)]
     pub values: Vec<FirestoreStringField>,
 }
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct RecipeField {
     #[serde(default)]
     pub name: Option<FirestoreStringField>,
@@ -133,6 +133,7 @@ pub struct UserFields {
     pub schedules: Option<FirestoreMapField>,
     pub savedrecipes: Option<FirestoreRecipeMapField>,
     pub hardware: Option<FirestoreHardwareMapField>,
+    pub grocery: Option<FirestoreGroceryMapField>,
 }
 
 // New struct specifically for saved recipes map
@@ -151,10 +152,11 @@ pub struct FirestoreHardwareMapField {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct HardwareField {
+    #[serde(default)]
     pub fields: HardwareFieldsInner,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct HardwareFieldsInner {
     #[serde(default)]
     pub devices: Option<FirestoreArrayField>,
@@ -176,6 +178,7 @@ pub struct FirestoreRecipeItem {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct FirestoreRecipeMap {
+    #[serde(default)]
     pub fields: RecipeField,
 }
 
@@ -247,4 +250,129 @@ pub struct AddRecipeRequest {
     pub time: Option<String>,
     pub image_url: Option<String>,
     pub quantity: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct GroceryToScheduleRequest {
+    pub date: String,       // YYYY-MM-DD
+    pub time: String,       // HH-MM
+    pub category: Option<String>,
+    pub expiry: String,     // YYYY-MM-DD
+}
+
+// ===== GROCERY SYSTEM STRUCTURES =====
+
+// Firestore grocery item field
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct GroceryItemField {
+    #[serde(default)]
+    pub name: Option<FirestoreStringField>,
+    #[serde(default)]
+    pub quantity: Option<FirestoreStringField>,
+    #[serde(default)]
+    pub unit: Option<FirestoreStringField>,
+    #[serde(default)]
+    pub checked: Option<FirestoreBooleanField>,
+    #[serde(default)]
+    pub uid: Option<FirestoreStringField>,
+}
+
+// API response grocery item
+#[derive(Serialize, Debug, Clone)]
+pub struct GroceryItem {
+    pub uid: String,
+    pub name: String,
+    pub quantity: String,
+    pub unit: String,
+    pub checked: bool,
+}
+
+// API response grocery list
+#[derive(Serialize, Debug, Clone)]
+pub struct GroceryList {
+    pub list_id: String,
+    pub list_name: String,
+    pub items: Vec<GroceryItem>,
+}
+
+// Firestore grocery item wrapper
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct FirestoreGroceryItem {
+    #[serde(rename = "mapValue")]
+    pub map_value: FirestoreGroceryItemMap,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct FirestoreGroceryItemMap {
+    pub fields: GroceryItemField,
+}
+
+// Firestore inner map for items within a list
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct FirestoreGroceryListInnerMap {
+    #[serde(default)]
+    pub fields: HashMap<String, FirestoreGroceryItem>,
+}
+
+// Firestore grocery list item (contains items)
+#[derive(Serialize, Deserialize, Debug)]
+pub struct FirestoreGroceryListItem {
+    #[serde(rename = "mapValue")]
+    pub map_value: FirestoreGroceryListMap,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct FirestoreGroceryListMap {
+    pub fields: GroceryListField,
+}
+
+// The fields that define a grocery list
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct GroceryListField {
+    #[serde(default)]
+    pub list_name: Option<FirestoreStringField>,
+    #[serde(default)]
+    pub items: Option<FirestoreGroceryItemsMapField>,
+}
+
+// Wrapper for the items map within a grocery list
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct FirestoreGroceryItemsMapField {
+    #[serde(rename = "mapValue")]
+    pub map_value: FirestoreGroceryListInnerMap,
+}
+
+// Firestore top-level grocery map (maps list_id -> GroceryList)
+#[derive(Serialize, Deserialize, Debug)]
+pub struct FirestoreGroceryMapField {
+    #[serde(rename = "mapValue")]
+    pub map_value: FirestoreGroceryInnerMap,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct FirestoreGroceryInnerMap {
+    #[serde(default)]
+    pub fields: HashMap<String, FirestoreGroceryListItem>,
+}
+
+// Request: Create a new grocery list
+#[derive(serde::Deserialize)]
+pub struct CreateGroceryListRequest {
+    pub list_name: String,
+}
+
+// Request: Add item to grocery list
+#[derive(serde::Deserialize)]
+pub struct AddGroceryItemRequest {
+    pub name: String,
+    pub quantity: String,
+    pub unit: String,
+}
+
+// Request: Update grocery item (toggle checked, etc)
+#[derive(serde::Deserialize, serde::Serialize)]
+pub struct UpdateGroceryItemRequest {
+    pub checked: Option<bool>,
+    pub quantity: Option<String>,
+    pub unit: Option<String>,
 }

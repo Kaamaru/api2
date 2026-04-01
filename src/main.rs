@@ -1,3 +1,4 @@
+#![allow(warnings)]
 use axum::{
     http::{HeaderMap, HeaderValue},
     routing::{delete, get, patch, post},
@@ -5,8 +6,11 @@ use axum::{
 };
 use reqwest::Method;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::task;
+use tokio::sync::RwLock;
+use dashmap::DashSet;
 use tower_http::cors::{Any, CorsLayer};
 
 mod firebase;
@@ -26,6 +30,7 @@ mod tasks {
     pub mod hardware;
     pub mod sendmail;
     pub mod timecheck;
+    pub mod recipe_search;
 }
 
 mod tools {
@@ -36,11 +41,15 @@ mod tools {
 use crate::{
     tasks::{
         basic,
-        firestore::{firestore::*, modify::*, notify::*},
+        firestore::{firestore::*, modify::*, notify::*, grocery::*, recipe::*},
         gemini::*,
         getimage::*,
         hardware::{device::*, tractor::tract_test,requests::*},
         timecheck,
+        recipe_search::{
+            AppState, add_recipe_info_to_list_handler, add_recipe_to_list_handler, generate_recipe_handler,
+            get_recipe_by_id_handler, search_recipe_handler,
+        },
     },
     tools::{imagebb, keycrypt},
 };
@@ -58,6 +67,22 @@ use crate::tasks::sendmail::do_expiration_mail;
 #[tokio::main]
 async fn main() {
     let firebase_config = FirebaseConfig::from_env();
+    
+    // Initialize AppState with cache from Firestore
+    let cache_data = match load_all_dishnames(&firebase_config).await {
+        Ok(data) => data,
+        Err(e) => {
+            eprintln!("⚠️ Failed to load cache from Firestore: {}", e);
+            Vec::new()
+        }
+    };
+    
+    let app_state = AppState {
+        cache: Arc::new(RwLock::new(cache_data)),
+        generating: Arc::new(DashSet::new()),
+        firebase_config: Arc::new(firebase_config.clone()),
+    };
+    
     task::spawn(async {
         timeloop().await;
     });
@@ -120,9 +145,25 @@ async fn main() {
         // .route("/get_user_notify", get(firestore_get_notified_users_schedules));
         ;
 
+    let grocery = Router::new()
+        .route("/{userid}", get(get_grocery_lists).post(create_grocery_list))
+        .route("/{userid}/{list_id}", get(get_grocery_list).delete(delete_grocery_list))
+        .route("/{userid}/{list_id}/items", patch(add_grocery_item))
+        .route("/{userid}/{list_id}/items/{item_id}", patch(update_grocery_item).delete(delete_grocery_item))
+        .route("/{userid}/{list_id}/items/{item_id}/to-schedule", post(convert_grocery_to_schedule));
+
+    let search = Router::new()
+        .route("/recipes", get(search_recipe_handler))
+        .route("/recipes/{id}", get(get_recipe_by_id_handler))
+        .route("/recipes/{id}/add-to-list", post(add_recipe_to_list_handler))
+        .route("/recipes/create-list/from-info", post(add_recipe_info_to_list_handler))
+        .route("/recipes/generate", post(generate_recipe_handler))
+        .with_state(app_state.clone());
+
     let app: Router = Router::new()
         .route("/", get(handle_get).post(handle_post))
         .route("/chat", post(chat_handler_with_retry))
+        .route("/classify", post(classify_image_handler))
         .route("/user/{uid}", get(handle_get_user_by_uid))
         .route("/data", get(handle_get_data))
     .route("/echo", get(async move ||{ println!("echo!");"Echo!"}))
@@ -133,7 +174,9 @@ async fn main() {
         .nest("/delete", delete_datas)
         .nest("/add", add_datas)
         .nest("/notify", notify)
+        .nest("/grocery", grocery)
         .nest("/hardware", hardware)
+        .nest("/search", search)
         .layer(cors)
         .with_state(firebase_config);
 

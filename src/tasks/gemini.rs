@@ -1,12 +1,19 @@
-use crate::firebase::GeminiConfig;
+use crate::firebase::{FirebaseConfig, GeminiConfig};
 use crate::structures::models::{
-    ChatRequest, GeminiContent, GeminiPart, GeminiRequest, GeminiResponse,
-    GenerationConfig, SystemInstruction,
+    ChatRequest, ClassifyResponse, GeminiContent, GeminiPart, GeminiRequest, GeminiResponse,
+    GenerationConfig, InlineImageData, SystemInstruction,
 };
+use crate::tasks::firestore::recipe::{insert_dishname, insert_recipe};
 use crate::tasks::getimage::get_one_image;
-use axum::{extract::Json, http::StatusCode, response::Json as ResponseJson};
+use axum::{extract::{Json, Multipart}, http::StatusCode, response::Json as ResponseJson};
 use reqwest::Client;
 use serde_json::Value;
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+pub struct ClassifyParams {
+    pub information: Option<String>,
+}
 
 #[allow(dead_code)]
 pub async fn call_gemini_api(gemini_request: &GeminiRequest) -> Result<String, reqwest::Error> {
@@ -176,11 +183,15 @@ Do not add extra text outside the JSON object.
     let gemini_request = GeminiRequest {
         system_instruction: Some(SystemInstruction {
             parts: vec![GeminiPart {
-                text: system_prompt,
+                text: Some(system_prompt),
+                inline_data: None,
             }],
         }),
         contents: vec![GeminiContent {
-            parts: vec![GeminiPart { text: content_text }],
+            parts: vec![GeminiPart { 
+                text: Some(content_text),
+                inline_data: None,
+            }],
         }],
         generation_config: GenerationConfig {
             temperature: 0.7,
@@ -306,4 +317,303 @@ fn validate_recipe_response(json: &Value) -> bool {
     }
 
     false
+}
+
+/// Handles image classification via Gemini Vision API
+/// Accepts multipart form with "image" field (PNG or JPG)
+/// Optional query param: ?information=CuisineType for additional context
+/// Returns dish identification with ingredients in "ingredient": "amount unit" format
+pub async fn classify_image_handler(
+    mut multipart: Multipart,
+) -> Result<ResponseJson<ClassifyResponse>, StatusCode> {
+    // Extract and validate image from multipart form
+    let mut image_bytes = Vec::new();
+    let mut mime_type = String::new();
+
+    while let Some(field) = multipart.next_field().await.map_err(|_| StatusCode::BAD_REQUEST)? {
+        let field_name = field.name().unwrap_or("").to_string();
+        
+        if field_name == "image" {
+            if let Some(content_type_str) = field.content_type() {
+                mime_type = content_type_str.to_string();
+            }
+            
+            // Validate MIME type (PNG or JPG)
+            if !mime_type.contains("image/png") && !mime_type.contains("image/jpeg") {
+                eprintln!("Invalid image MIME type: {}", mime_type);
+                return Err(StatusCode::BAD_REQUEST);
+            }
+            
+            // Set default MIME type if not specified correctly
+            if mime_type.is_empty() {
+                mime_type = "image/jpeg".to_string();
+            }
+            
+            image_bytes = field.bytes().await.map_err(|_| StatusCode::BAD_REQUEST)?.to_vec();
+            break;
+        }
+    }
+
+    if image_bytes.is_empty() {
+        eprintln!("No image provided in multipart form");
+        return Err(StatusCode::BAD_REQUEST);
+    }
+
+    // Convert image to base64
+    let base64_image = base64_encode(&image_bytes);
+
+    // Build context from query parameter
+    let context_line = String::new();
+
+    // Build Gemini Vision request
+    let system_prompt = format!(r#"You are a food identification expert. Your task is to respond with JSON ONLY, no matter what.
+
+{}If there is a dish in the image, identify it, list ingredients with amounts, and estimate nutrition info.
+If there is NO food/dish in the image, return:
+{{
+  "dishName": "No Food Detected",
+  "ingredients": {{}}
+}}
+
+ALWAYS respond with valid JSON (no markdown, no extra text, no explanations):
+{{
+  "dishName": "Name of the dish or 'No Food Detected'",
+    "genericName": "short searchable base name such as 'fried rice', 'noodle soup', 'grilled chicken'",
+  "ingredients": {{
+    "ingredient_name": "amount unit",
+    "rice": "2 cups",
+    "salt": "1 teaspoon"
+  }},
+  "calories": "250 kcal",
+  "nutrients": {{
+    "protein": "15g",
+    "carbs": "30g",
+    "fat": "8g",
+    "fiber": "2g"
+  }}
+}}
+
+Be concise. Include calories per serving and nutrient breakdown. Respond ONLY with JSON."#, context_line);
+
+    let content_text = "Please identify this dish and provide its ingredients.";
+
+    let gemini_request = GeminiRequest {
+        system_instruction: Some(SystemInstruction {
+            parts: vec![GeminiPart {
+                text: Some(system_prompt.to_string()),
+                inline_data: None,
+            }],
+        }),
+        contents: vec![GeminiContent {
+            parts: vec![
+                GeminiPart {
+                    text: Some(content_text.to_string()),
+                    inline_data: None,
+                },
+                GeminiPart {
+                    text: None,
+                    inline_data: Some(InlineImageData {
+                        mime_type: mime_type.clone(),
+                        data: base64_image,
+                    }),
+                },
+            ],
+        }],
+        generation_config: GenerationConfig {
+            temperature: 0.7,
+            max_output_tokens: 2500,
+            top_p: 0.8,
+            top_k: 40,
+        },
+    };
+
+    // Call Gemini API
+    let api_key = GeminiConfig::from_env().api_key;
+    let url = GeminiConfig::from_env().base_url;
+    let client = Client::new();
+
+    let response = client
+        .post(url)
+        .header("x-goog-api-key", &api_key)
+        .header("Content-Type", "application/json")
+        .json(&gemini_request)
+        .send()
+        .await
+        .map_err(|e| {
+            eprintln!("Gemini API request failed: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+    if !response.status().is_success() {
+        let err_text = response.text().await.unwrap_or_default();
+        eprintln!("Gemini API error response: {}", err_text);
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    let gemini_response: GeminiResponse = response.json().await.map_err(|e| {
+        eprintln!("Failed to parse Gemini response: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    let response_text = gemini_response
+        .candidates
+        .first()
+        .and_then(|c| c.content.parts.first())
+        .map(|p| p.text.clone())
+        .unwrap_or_else(|| "No response".to_string());
+
+    // Clean up response - remove markdown code blocks
+    let cleaned_response = {
+        let mut text = response_text.trim().to_string();
+
+        if text.starts_with("```json") {
+            text = text.strip_prefix("```json").unwrap_or(&text).to_string();
+        } else if text.starts_with("```") {
+            text = text.strip_prefix("```").unwrap_or(&text).to_string();
+        }
+
+        if text.ends_with("```") {
+            text = text.strip_suffix("```").unwrap_or(&text).to_string();
+        }
+
+        text.trim().to_string()
+    };
+
+    // Parse JSON response into ClassifyResponse
+    let parsed_json: Value = serde_json::from_str(&cleaned_response).map_err(|e| {
+        eprintln!("Failed to parse classification JSON: {}", e);
+        eprintln!("Response was: {}", cleaned_response);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    fn value_to_string(v: &serde_json::Value) -> String {
+        match v {
+            serde_json::Value::String(s) => s.clone(),
+            serde_json::Value::Number(n) => n.to_string(),
+            serde_json::Value::Bool(b) => b.to_string(),
+            serde_json::Value::Null => String::new(),
+            _ => v.to_string(),
+        }
+    }
+
+    let classify_response = ClassifyResponse {
+        dish_name: parsed_json
+            .get("dishName")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unknown Dish")
+            .to_string(),
+        ingredients: parsed_json
+            .get("ingredients")
+            .and_then(|v| v.as_object())
+            .map(|obj| {
+                obj.iter()
+                    .map(|(k, v)| (k.clone(), value_to_string(v)))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        calories: parsed_json
+            .get("calories")
+            .map(value_to_string)
+            .and_then(|s| if s.is_empty() { None } else { Some(s) }),
+        nutrients: parsed_json
+            .get("nutrients")
+            .and_then(|v| v.as_object())
+            .map(|obj| {
+                obj.iter()
+                    .map(|(k, v)| (k.clone(), value_to_string(v)))
+                    .collect()
+            }),
+    };
+
+    let no_food = classify_response.dish_name.eq_ignore_ascii_case("No Food Detected");
+    if !no_food && !classify_response.ingredients.is_empty() {
+        let firebase_config = FirebaseConfig::from_env();
+        let generic_name = parsed_json
+            .get("genericName")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| classify_response.dish_name.clone());
+
+        let mut nutrients = classify_response.nutrients.clone().unwrap_or_default();
+        if let Some(calories) = &classify_response.calories {
+            if !calories.trim().is_empty() {
+                nutrients.insert("calories".to_string(), calories.clone());
+            }
+        }
+
+        let aliases = if generic_name != classify_response.dish_name {
+            vec![
+                classify_response.dish_name.to_lowercase().replace(" ", ""),
+                generic_name.to_lowercase().replace(" ", ""),
+            ]
+        } else {
+            vec![generic_name.to_lowercase().replace(" ", "")]
+        };
+
+        let recipe_id = match insert_recipe(
+            &firebase_config,
+            generic_name.clone(),
+            classify_response.ingredients.clone(),
+            classify_response.calories.clone(),
+            Some(nutrients),
+            aliases.clone(),
+        )
+        .await
+        {
+            Ok(id) => id,
+            Err(e) => {
+                eprintln!("⚠️ classify save: failed to insert recipe '{}': {}", generic_name, e);
+                return Ok(ResponseJson(classify_response));
+            }
+        };
+
+        let normalized = generic_name.to_lowercase().replace(" ", "");
+        if let Err(e) = insert_dishname(
+            &firebase_config,
+            recipe_id.clone(),
+            generic_name.clone(),
+            normalized,
+            aliases,
+        )
+        .await
+        {
+            eprintln!("⚠️ classify save: failed to insert dishname for '{}': {}", generic_name, e);
+        } else {
+            eprintln!("✅ classify save: recipe persisted '{}', recipe_id='{}'", generic_name, recipe_id);
+        }
+    }
+
+    Ok(ResponseJson(classify_response))
+}
+
+/// Helper: Encode bytes to base64
+fn base64_encode(data: &[u8]) -> String {
+    const BASE64_CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut result = String::new();
+    
+    for chunk in data.chunks(3) {
+        let b1 = chunk[0];
+        let b2 = chunk.get(1).copied().unwrap_or(0);
+        let b3 = chunk.get(2).copied().unwrap_or(0);
+        
+        let n = ((b1 as u32) << 16) | ((b2 as u32) << 8) | (b3 as u32);
+        
+        result.push(BASE64_CHARS[((n >> 18) & 63) as usize] as char);
+        result.push(BASE64_CHARS[((n >> 12) & 63) as usize] as char);
+        
+        if chunk.len() > 1 {
+            result.push(BASE64_CHARS[((n >> 6) & 63) as usize] as char);
+        } else {
+            result.push('=');
+        }
+        
+        if chunk.len() > 2 {
+            result.push(BASE64_CHARS[(n & 63) as usize] as char);
+        } else {
+            result.push('=');
+        }
+    }
+    
+    result
 }

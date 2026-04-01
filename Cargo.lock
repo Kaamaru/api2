@@ -99,6 +99,7 @@ dependencies = [
  "axum",
  "chrono",
  "chrono-tz",
+ "dashmap",
  "dotenv",
  "firestore",
  "futures",
@@ -112,6 +113,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serpapi-search-rust",
+ "strsim",
  "tensorflow",
  "tokio",
  "tower-http",
@@ -780,6 +782,20 @@ dependencies = [
  "pkg-config",
  "vcpkg",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "dashmap"
+version = "6.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5041cc499144891f3790297212f32a74fb938e5136a14943f338ef9e0ae276cf"
+dependencies = [
+ "cfg-if",
+ "crossbeam-utils",
+ "hashbrown 0.14.5",
+ "lock_api",
+ "once_cell",
+ "parking_lot_core",
 ]
 
 [[package]]
@@ -3513,6 +3529,12 @@ dependencies = [
  "hashbrown 0.14.5",
  "serde",
 ]
+
+[[package]]
+name = "strsim"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
 name = "struct-path"

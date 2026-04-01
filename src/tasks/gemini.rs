@@ -1,10 +1,11 @@
-use crate::firebase::GeminiConfig;
+use crate::firebase::{FirebaseConfig, GeminiConfig};
 use crate::structures::models::{
     ChatRequest, ClassifyResponse, GeminiContent, GeminiPart, GeminiRequest, GeminiResponse,
     GenerationConfig, InlineImageData, SystemInstruction,
 };
+use crate::tasks::firestore::recipe::{insert_dishname, insert_recipe};
 use crate::tasks::getimage::get_one_image;
-use axum::{extract::{Json, Multipart, Query}, http::StatusCode, response::Json as ResponseJson};
+use axum::{extract::{Json, Multipart}, http::StatusCode, response::Json as ResponseJson};
 use reqwest::Client;
 use serde_json::Value;
 use serde::Deserialize;
@@ -323,7 +324,6 @@ fn validate_recipe_response(json: &Value) -> bool {
 /// Optional query param: ?information=CuisineType for additional context
 /// Returns dish identification with ingredients in "ingredient": "amount unit" format
 pub async fn classify_image_handler(
-    Query(params): Query<ClassifyParams>,
     mut multipart: Multipart,
 ) -> Result<ResponseJson<ClassifyResponse>, StatusCode> {
     // Extract and validate image from multipart form
@@ -363,11 +363,7 @@ pub async fn classify_image_handler(
     let base64_image = base64_encode(&image_bytes);
 
     // Build context from query parameter
-    let context_line = params
-        .information
-        .as_ref()
-        .map(|info| format!("Cuisine/Context hint: {}\n", info))
-        .unwrap_or_default();
+    let context_line = String::new();
 
     // Build Gemini Vision request
     let system_prompt = format!(r#"You are a food identification expert. Your task is to respond with JSON ONLY, no matter what.
@@ -382,6 +378,7 @@ If there is NO food/dish in the image, return:
 ALWAYS respond with valid JSON (no markdown, no extra text, no explanations):
 {{
   "dishName": "Name of the dish or 'No Food Detected'",
+    "genericName": "short searchable base name such as 'fried rice', 'noodle soup', 'grilled chicken'",
   "ingredients": {{
     "ingredient_name": "amount unit",
     "rice": "2 cups",
@@ -489,6 +486,16 @@ Be concise. Include calories per serving and nutrient breakdown. Respond ONLY wi
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
+    fn value_to_string(v: &serde_json::Value) -> String {
+        match v {
+            serde_json::Value::String(s) => s.clone(),
+            serde_json::Value::Number(n) => n.to_string(),
+            serde_json::Value::Bool(b) => b.to_string(),
+            serde_json::Value::Null => String::new(),
+            _ => v.to_string(),
+        }
+    }
+
     let classify_response = ClassifyResponse {
         dish_name: parsed_json
             .get("dishName")
@@ -500,23 +507,82 @@ Be concise. Include calories per serving and nutrient breakdown. Respond ONLY wi
             .and_then(|v| v.as_object())
             .map(|obj| {
                 obj.iter()
-                    .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string()))
+                    .map(|(k, v)| (k.clone(), value_to_string(v)))
                     .collect()
             })
             .unwrap_or_default(),
         calories: parsed_json
             .get("calories")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string()),
+            .map(value_to_string)
+            .and_then(|s| if s.is_empty() { None } else { Some(s) }),
         nutrients: parsed_json
             .get("nutrients")
             .and_then(|v| v.as_object())
             .map(|obj| {
                 obj.iter()
-                    .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string()))
+                    .map(|(k, v)| (k.clone(), value_to_string(v)))
                     .collect()
             }),
     };
+
+    let no_food = classify_response.dish_name.eq_ignore_ascii_case("No Food Detected");
+    if !no_food && !classify_response.ingredients.is_empty() {
+        let firebase_config = FirebaseConfig::from_env();
+        let generic_name = parsed_json
+            .get("genericName")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| classify_response.dish_name.clone());
+
+        let mut nutrients = classify_response.nutrients.clone().unwrap_or_default();
+        if let Some(calories) = &classify_response.calories {
+            if !calories.trim().is_empty() {
+                nutrients.insert("calories".to_string(), calories.clone());
+            }
+        }
+
+        let aliases = if generic_name != classify_response.dish_name {
+            vec![
+                classify_response.dish_name.to_lowercase().replace(" ", ""),
+                generic_name.to_lowercase().replace(" ", ""),
+            ]
+        } else {
+            vec![generic_name.to_lowercase().replace(" ", "")]
+        };
+
+        let recipe_id = match insert_recipe(
+            &firebase_config,
+            generic_name.clone(),
+            classify_response.ingredients.clone(),
+            classify_response.calories.clone(),
+            Some(nutrients),
+            aliases.clone(),
+        )
+        .await
+        {
+            Ok(id) => id,
+            Err(e) => {
+                eprintln!("⚠️ classify save: failed to insert recipe '{}': {}", generic_name, e);
+                return Ok(ResponseJson(classify_response));
+            }
+        };
+
+        let normalized = generic_name.to_lowercase().replace(" ", "");
+        if let Err(e) = insert_dishname(
+            &firebase_config,
+            recipe_id.clone(),
+            generic_name.clone(),
+            normalized,
+            aliases,
+        )
+        .await
+        {
+            eprintln!("⚠️ classify save: failed to insert dishname for '{}': {}", generic_name, e);
+        } else {
+            eprintln!("✅ classify save: recipe persisted '{}', recipe_id='{}'", generic_name, recipe_id);
+        }
+    }
 
     Ok(ResponseJson(classify_response))
 }

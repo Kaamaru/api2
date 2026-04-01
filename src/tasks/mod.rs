@@ -5,3 +5,4 @@ pub mod getimage;
 pub mod hardware;
 pub mod sendmail;
 pub mod timecheck;
+pub mod recipe_search;

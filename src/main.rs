@@ -130,6 +130,7 @@ async fn main() {
     let app: Router = Router::new()
         .route("/", get(handle_get).post(handle_post))
         .route("/chat", post(chat_handler_with_retry))
+        .route("/classify", post(classify_image_handler))
         .route("/user/{uid}", get(handle_get_user_by_uid))
         .route("/data", get(handle_get_data))
     .route("/echo", get(async move ||{ println!("echo!");"Echo!"}))

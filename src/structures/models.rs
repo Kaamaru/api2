@@ -41,7 +41,16 @@ pub struct GeminiContent {
 
 #[derive(Serialize)]
 pub struct GeminiPart {
-    pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inline_data: Option<InlineImageData>,
+}
+
+#[derive(Serialize)]
+pub struct InlineImageData {
+    pub mime_type: String,
+    pub data: String,
 }
 
 #[derive(Deserialize)]
@@ -83,4 +92,16 @@ pub struct Dish {
     pub portions: std::collections::HashMap<String, String>,
     #[serde(rename = "preparationSteps")]
     pub preparation_steps: Vec<String>,
+}
+
+/// Response from /classify endpoint: dish identification + ingredients + nutrition
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ClassifyResponse {
+    #[serde(rename = "dishName")]
+    pub dish_name: String,
+    pub ingredients: std::collections::HashMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub calories: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nutrients: Option<std::collections::HashMap<String, String>>,
 }

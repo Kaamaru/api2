@@ -513,3 +513,135 @@ pub async fn get_hardware_records(
         Err(_) => Json(json!({"error": "Failed to fetch user"})),
     }
 }
+
+
+// Move provided request codes into devices; skip any codes not present in requests
+pub async fn accept_request_record(
+    Path(userid): Path<String>,
+    State(firebase_config): State<FirebaseConfig>,
+    Json(codes): Json<Vec<String>>,
+) -> impl IntoResponse {
+    let client = Client::new();
+    let get_url = format!("{}/users/{}", firebase_config.firestore_url(), userid);
+
+    match client.get(&get_url).send().await {
+        Ok(resp) => match resp.text().await {
+            Ok(body) => {
+                if let Ok(current_data) = serde_json::from_str::<serde_json::Value>(&body) {
+                    let mut devices: Vec<String> = Vec::new();
+                    let mut requests: Vec<String> = Vec::new();
+
+                    if let Some(fields) = current_data.get("fields") {
+                        if let Some(hardware) = fields.get("hardware") {
+                            if let Some(map_value) = hardware.get("mapValue") {
+                                if let Some(hw_fields) = map_value.get("fields") {
+                                    // existing devices
+                                    if let Some(devices_array) = hw_fields.get("devices") {
+                                        if let Some(array_value) = devices_array.get("arrayValue") {
+                                            if let Some(values) = array_value.get("values") {
+                                                if let Ok(vals) = serde_json::from_value::<Vec<serde_json::Value>>(values.clone()) {
+                                                    for v in vals {
+                                                        if let Some(sv) = v.get("stringValue").and_then(|x| x.as_str()) {
+                                                            devices.push(sv.to_string());
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    // existing requests
+                                    if let Some(requests_array) = hw_fields.get("requests") {
+                                        if let Some(array_value) = requests_array.get("arrayValue") {
+                                            if let Some(values) = array_value.get("values") {
+                                                if let Ok(vals) = serde_json::from_value::<Vec<serde_json::Value>>(values.clone()) {
+                                                    for v in vals {
+                                                        if let Some(sv) = v.get("stringValue").and_then(|x| x.as_str()) {
+                                                            requests.push(sv.to_string());
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    let requested: std::collections::HashSet<String> = codes.into_iter().collect();
+                    let mut accepted: Vec<String> = Vec::new();
+                    let mut remaining_requests: Vec<String> = Vec::new();
+
+                    let mut devices_updated = devices.clone();
+                    for req in requests {
+                        if requested.contains(&req) {
+                            // Only add to devices if not already present
+                            if !devices_updated.contains(&req) {
+                                devices_updated.push(req.clone());
+                            }
+                            accepted.push(req);
+                        } else {
+                            remaining_requests.push(req);
+                        }
+                    }
+
+                    // Build Firestore payload to update both arrays
+                    let devices_payload: Vec<serde_json::Value> = devices_updated
+                        .into_iter()
+                        .map(|d| json!({"stringValue": d}))
+                        .collect();
+                    let requests_payload: Vec<serde_json::Value> = remaining_requests
+                        .into_iter()
+                        .map(|r| json!({"stringValue": r}))
+                        .collect();
+
+                    let patch_url = format!(
+                        "{}/users/{}?updateMask.fieldPaths=hardware.devices&updateMask.fieldPaths=hardware.requests",
+                        firebase_config.firestore_url(),
+                        userid
+                    );
+
+                    let update_body = json!({
+                        "fields": {
+                            "hardware": {
+                                "mapValue": {
+                                    "fields": {
+                                        "devices": {
+                                            "arrayValue": {
+                                                "values": devices_payload
+                                            }
+                                        },
+                                        "requests": {
+                                            "arrayValue": {
+                                                "values": requests_payload
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+
+                    match client
+                        .patch(&patch_url)
+                        .header("Content-Type", "application/json")
+                        .json(&update_body)
+                        .send()
+                        .await
+                    {
+                        Ok(_) => Json(json!({
+                            "success": true,
+                            "accepted": accepted,
+                            "skipped": requested.len().saturating_sub(accepted.len()),
+                        })),
+                        Err(_) => Json(json!({"success": false, "error": "Failed to update"})),
+                    }
+                } else {
+                    Json(json!({"error": "Failed to parse user data"}))
+                }
+            }
+            Err(_) => Json(json!({"error": "Failed to read response"})),
+        },
+        Err(_) => Json(json!({"error": "Failed to fetch user"})),
+    }
+}

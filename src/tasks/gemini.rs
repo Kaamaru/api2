@@ -6,6 +6,7 @@ use crate::structures::models::{
 use crate::tasks::firestore::recipe::{insert_dishname, insert_recipe};
 use crate::tasks::getimage::get_one_image;
 use axum::{extract::{Json, Multipart}, http::StatusCode, response::Json as ResponseJson};
+use image::{self, codecs::jpeg::JpegEncoder, imageops::FilterType};
 use reqwest::Client;
 use serde_json::Value;
 use serde::Deserialize;
@@ -337,18 +338,17 @@ pub async fn classify_image_handler(
             if let Some(content_type_str) = field.content_type() {
                 mime_type = content_type_str.to_string();
             }
+
+            if mime_type.is_empty() {
+                mime_type = "image/jpeg".to_string();
+            }
             
             // Validate MIME type (PNG or JPG)
             if !mime_type.contains("image/png") && !mime_type.contains("image/jpeg") {
                 eprintln!("Invalid image MIME type: {}", mime_type);
                 return Err(StatusCode::BAD_REQUEST);
             }
-            
-            // Set default MIME type if not specified correctly
-            if mime_type.is_empty() {
-                mime_type = "image/jpeg".to_string();
-            }
-            
+
             image_bytes = field.bytes().await.map_err(|_| StatusCode::BAD_REQUEST)?.to_vec();
             break;
         }
@@ -359,8 +359,18 @@ pub async fn classify_image_handler(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    // Convert image to base64
-    let base64_image = base64_encode(&image_bytes);
+    // Preprocess image before base64 to reduce payload and token pressure.
+    let (prepared_image_bytes, prepared_mime_type) = preprocess_image_for_gemini(&image_bytes, &mime_type);
+    if prepared_image_bytes.len() < image_bytes.len() {
+        eprintln!(
+            "classify: compressed image {} -> {} bytes",
+            image_bytes.len(),
+            prepared_image_bytes.len()
+        );
+    }
+
+    // Convert preprocessed image to base64
+    let base64_image = base64_encode(&prepared_image_bytes);
 
     // Build context from query parameter
     let context_line = String::new();
@@ -413,7 +423,7 @@ Be concise. Include calories per serving and nutrient breakdown. Respond ONLY wi
                 GeminiPart {
                     text: None,
                     inline_data: Some(InlineImageData {
-                        mime_type: mime_type.clone(),
+                        mime_type: prepared_mime_type,
                         data: base64_image,
                     }),
                 },
@@ -616,4 +626,41 @@ fn base64_encode(data: &[u8]) -> String {
     }
     
     result
+}
+
+/// Resize and compress image for Gemini vision calls.
+fn preprocess_image_for_gemini(image_bytes: &[u8], original_mime_type: &str) -> (Vec<u8>, String) {
+    const MAX_DIMENSION: u32 = 1024;
+    const JPEG_QUALITY: u8 = 78;
+
+    let normalized_mime = if original_mime_type.contains("image/png") {
+        "image/png"
+    } else if original_mime_type.contains("image/jpeg") {
+        "image/jpeg"
+    } else {
+        "image/jpeg"
+    };
+
+    let decoded = match image::load_from_memory(image_bytes) {
+        Ok(img) => img,
+        Err(err) => {
+            eprintln!("classify: image decode failed, using original bytes: {}", err);
+            return (image_bytes.to_vec(), normalized_mime.to_string());
+        }
+    };
+
+    let resized = if decoded.width() > MAX_DIMENSION || decoded.height() > MAX_DIMENSION {
+        decoded.resize(MAX_DIMENSION, MAX_DIMENSION, FilterType::Triangle)
+    } else {
+        decoded
+    };
+
+    let mut compressed = Vec::new();
+    let mut encoder = JpegEncoder::new_with_quality(&mut compressed, JPEG_QUALITY);
+    if let Err(err) = encoder.encode_image(&resized) {
+        eprintln!("classify: image encode failed, using original bytes: {}", err);
+        return (image_bytes.to_vec(), normalized_mime.to_string());
+    }
+
+    (compressed, "image/jpeg".to_string())
 }

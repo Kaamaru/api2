@@ -38,10 +38,15 @@ mod tools {
     pub mod keycrypt;
 }
 
+mod tests {
+    pub mod dev;
+    pub mod api_contract;
+}
+
 use crate::{
     tasks::{
         basic,
-        firestore::{firestore::*, household::*, modify::*, notify::*, grocery::*, people::*, recipe::*},
+        firestore::{firestore::*, household::*, household_extended::*, modify::*, notify::*, grocery::*, people::*, recipe::*},
         gemini::*,
         getimage::*,
         hardware::{device::*, tractor::tract_test,requests::*},
@@ -158,12 +163,17 @@ async fn main() {
 
     let households = Router::new()
         .route("/", post(create_household))
-        .route("/{household_id}", get(get_household_summary))
-        .route("/{household_id}/join-requests", get(list_join_requests).post(create_join_request))
-        .route("/{household_id}/join-requests/{request_id}", patch(review_join_request))
-        .route("/{household_id}/members/{member_uid}", patch(update_member_role).delete(remove_member))
+        .route("/my", get(get_my_household))
+        .route("/{household_id}/generate-invite", post(generate_household_invite))
+        .route("/redeem-invite", post(redeem_household_invite))
+        .route("/{household_id}/members/{member_uid}", delete(remove_member))
+        .route("/{household_id}/leave", post(leave_household))
         .route("/{household_id}/schedules", get(list_household_schedules).post(add_household_schedule))
-        .route("/{household_id}/grocery", get(list_household_grocery_lists).post(create_household_grocery_list));
+        .route("/{household_id}/schedules/{schedule_id}", patch(update_household_schedule).delete(delete_household_schedule))
+        .route("/{household_id}/grocery", get(list_household_grocery_lists).post(create_household_grocery_list))
+        .route("/{household_id}/grocery/{list_id}", delete(delete_household_grocery_list))
+        .route("/{household_id}/grocery/{list_id}/items", post(add_household_grocery_item))
+        .route("/{household_id}/grocery/{list_id}/items/{item_id}", patch(update_household_grocery_item).delete(delete_household_grocery_item));
 
     let search = Router::new()
         .route("/recipes", get(search_recipe_handler))

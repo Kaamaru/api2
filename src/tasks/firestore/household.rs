@@ -1,13 +1,14 @@
-use crate::{
-    structures::structs::{AddScheduleRequest, CreateGroceryListRequest},
-    FirebaseConfig,
-};
+// New household endpoints with refactored Firestore structure
+// Structure: /households/{household_id}
+// Fields: host (uid), name, members (array), invite_code, invite_expires_at
+
+use crate::FirebaseConfig;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Json},
 };
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -36,6 +37,24 @@ fn get_doc_string_field(doc: &Value, key: &str) -> Option<String> {
         .map(|s| s.to_string())
 }
 
+fn get_doc_array_field(doc: &Value, key: &str) -> Vec<String> {
+    doc.get("fields")
+        .and_then(|f| f.get(key))
+        .and_then(|v| v.get("arrayValue"))
+        .and_then(|a| a.get("values"))
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| {
+                    item.get("stringValue")
+                        .and_then(|s| s.as_str())
+                        .map(|s| s.to_string())
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[derive(Deserialize)]
 pub struct CreateHouseholdRequest {
     pub owner_uid: String,
@@ -43,113 +62,27 @@ pub struct CreateHouseholdRequest {
 }
 
 #[derive(Deserialize)]
-pub struct JoinHouseholdRequest {
-    pub requester_uid: String,
-    #[serde(default)]
-    pub requested_role: Option<String>,
+pub struct GenerateInviteRequest {
+    pub actor_uid: String,
 }
 
 #[derive(Deserialize)]
-pub struct ReviewJoinRequest {
-    pub actor_uid: String,
-    pub action: String,
-}
-
-#[derive(Deserialize)]
-pub struct UpdateMemberRoleRequest {
-    pub actor_uid: String,
-    pub role: String,
+pub struct RedeemInviteRequest {
+    pub invite_code: String,
+    pub member_uid: String,
 }
 
 #[derive(Deserialize)]
 pub struct RemoveMemberRequest {
-    pub actor_uid: String,
+    pub member_uid: String,
 }
 
 #[derive(Deserialize)]
-pub struct HouseholdAddScheduleRequest {
+pub struct LeaveHouseholdRequest {
     pub member_uid: String,
-    pub name: String,
-    pub time: String,
-    pub date: String,
-    pub expiry: String,
-    pub notify: bool,
-    pub category: Option<String>,
-    pub quantity: String,
-    pub location: Option<String>,
 }
 
-#[derive(Deserialize)]
-pub struct HouseholdCreateGroceryListRequest {
-    pub member_uid: String,
-    pub list_name: String,
-}
-
-async fn is_owner(
-    client: &Client,
-    firebase_config: &FirebaseConfig,
-    household_id: &str,
-    uid: &str,
-) -> Result<bool, String> {
-    let member_url = format!(
-        "{}/households/{}/members/{}",
-        firebase_config.firestore_url(),
-        household_id,
-        uid
-    );
-
-    let resp = client
-        .get(&member_url)
-        .send()
-        .await
-        .map_err(|e| format!("Failed to fetch member: {e}"))?;
-
-    if !resp.status().is_success() {
-        return Ok(false);
-    }
-
-    let doc: Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse member document: {e}"))?;
-
-    let role = get_doc_string_field(&doc, "role").unwrap_or_default();
-    let status = get_doc_string_field(&doc, "status").unwrap_or_default();
-
-    Ok(role == "owner" && status == "approved")
-}
-
-async fn is_approved_member(
-    client: &Client,
-    firebase_config: &FirebaseConfig,
-    household_id: &str,
-    uid: &str,
-) -> Result<bool, String> {
-    let member_url = format!(
-        "{}/households/{}/members/{}",
-        firebase_config.firestore_url(),
-        household_id,
-        uid
-    );
-
-    let resp = client
-        .get(&member_url)
-        .send()
-        .await
-        .map_err(|e| format!("Failed to fetch member: {e}"))?;
-
-    if !resp.status().is_success() {
-        return Ok(false);
-    }
-
-    let doc: Value = resp
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse member document: {e}"))?;
-
-    let status = get_doc_string_field(&doc, "status").unwrap_or_default();
-    Ok(status == "approved")
-}
+// ============ CREATE HOUSEHOLD ============
 
 pub async fn create_household(
     State(firebase_config): State<FirebaseConfig>,
@@ -163,8 +96,7 @@ pub async fn create_household(
             .into_response();
     }
 
-    let household_id = generate_unique_id("household");
-    let now = Utc::now().to_rfc3339();
+    let household_id = generate_unique_id("hh");
     let client = Client::new();
 
     let household_url = format!(
@@ -175,9 +107,11 @@ pub async fn create_household(
 
     let household_payload = json!({
         "fields": {
+            "host": {"stringValue": request.owner_uid},
             "name": {"stringValue": request.name},
-            "owner_uid": {"stringValue": request.owner_uid},
-            "created_at": {"stringValue": now.clone()}
+            "members": {"arrayValue": {"values": []}},
+            "invite_code": {"nullValue": null},
+            "invite_expires_at": {"nullValue": null}
         }
     });
 
@@ -202,47 +136,20 @@ pub async fn create_household(
             .into_response();
     }
 
-    let owner_member_url = format!(
-        "{}/households/{}/members?documentId={}",
+    // Store household_id on owner's user doc
+    let user_url = format!(
+        "{}/users/{}?updateMask.fieldPaths=household_id",
         firebase_config.firestore_url(),
-        household_id,
         request.owner_uid
     );
 
-    let owner_member_payload = json!({
+    let user_payload = json!({
         "fields": {
-            "uid": {"stringValue": request.owner_uid},
-            "role": {"stringValue": "owner"},
-            "status": {"stringValue": "approved"},
-            "joined_at": {"stringValue": now}
+            "household_id": {"stringValue": household_id}
         }
     });
 
-    let owner_resp = match client
-        .post(&owner_member_url)
-        .json(&owner_member_payload)
-        .send()
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("Failed to create owner membership: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Failed to create owner membership"})),
-            )
-                .into_response();
-        }
-    };
-
-    if !owner_resp.status().is_success() {
-        let body = owner_resp.text().await.unwrap_or_default();
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": "Failed to create owner membership", "details": body})),
-        )
-            .into_response();
-    }
+    let _ = client.patch(&user_url).json(&user_payload).send().await;
 
     (
         StatusCode::CREATED,
@@ -256,40 +163,78 @@ pub async fn create_household(
         .into_response()
 }
 
-pub async fn get_household_summary(
-    Path(household_id): Path<String>,
+// ============ GET MY HOUSEHOLD ============
+
+pub async fn get_my_household(
     State(firebase_config): State<FirebaseConfig>,
     Query(query): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let member_uid = query.get("member_uid").cloned().unwrap_or_default();
-    if member_uid.trim().is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "member_uid query is required"})),
-        )
-            .into_response();
-    }
-
-    let client = Client::new();
-    let is_member = match is_approved_member(&client, &firebase_config, &household_id, &member_uid).await {
-        Ok(v) => v,
-        Err(e) => {
+    let member_uid = match query.get("member_uid") {
+        Some(uid) if !uid.trim().is_empty() => uid.clone(),
+        _ => {
             return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Failed to verify membership", "details": e})),
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "member_uid query parameter is required"})),
             )
-                .into_response()
+                .into_response();
         }
     };
 
-    if !is_member {
+    let client = Client::new();
+
+    // Get household_id from user doc
+    let user_url = format!("{}/users/{}", firebase_config.firestore_url(), member_uid);
+
+    let user_resp = match client.get(&user_url).send().await {
+        Ok(r) => r,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Failed to fetch user document"})),
+            )
+                .into_response();
+        }
+    };
+
+    if !user_resp.status().is_success() {
+        if user_resp.status() == StatusCode::NOT_FOUND {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "User not found"})),
+            )
+                .into_response();
+        }
+
         return (
-            StatusCode::FORBIDDEN,
-            Json(json!({"error": "Only approved members can view household"})),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "Failed to fetch user document"})),
         )
             .into_response();
     }
 
+    let user_doc: Value = match user_resp.json().await {
+        Ok(doc) => doc,
+        Err(_) => {
+            return (
+                StatusCode::OK,
+                Json(json!({"household_id": null})),
+            )
+                .into_response();
+        }
+    };
+
+    let household_id = match get_doc_string_field(&user_doc, "household_id") {
+        Some(id) if !id.is_empty() => id,
+        _ => {
+            return (
+                StatusCode::OK,
+                Json(json!({"household_id": null})),
+            )
+                .into_response();
+        }
+    };
+
+    // Fetch household doc
     let household_url = format!(
         "{}/households/{}",
         firebase_config.firestore_url(),
@@ -298,201 +243,158 @@ pub async fn get_household_summary(
 
     let household_resp = match client.get(&household_url).send().await {
         Ok(r) => r,
-        Err(e) => {
+        Err(_) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Failed to fetch household", "details": e.to_string()})),
+                Json(json!({"error": "Failed to fetch household"})),
             )
                 .into_response();
         }
     };
 
     if !household_resp.status().is_success() {
-        let body = household_resp.text().await.unwrap_or_default();
         return (
             StatusCode::NOT_FOUND,
-            Json(json!({"error": "Household not found", "details": body})),
+            Json(json!({"error": "Household not found"})),
         )
             .into_response();
     }
 
     let household_doc: Value = match household_resp.json().await {
-        Ok(v) => v,
-        Err(e) => {
+        Ok(doc) => doc,
+        Err(_) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Failed to parse household", "details": e.to_string()})),
+                Json(json!({"error": "Failed to parse household"})),
             )
                 .into_response();
         }
     };
 
-    let members_url = format!(
-        "{}/households/{}/members",
-        firebase_config.firestore_url(),
-        household_id
-    );
-
-    let members_resp = match client.get(&members_url).send().await {
-        Ok(r) => r,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Failed to fetch members", "details": e.to_string()})),
-            )
-                .into_response();
-        }
-    };
-
-    let members_payload: Value = members_resp.json().await.unwrap_or_else(|_| json!({}));
-    let member_docs = members_payload
-        .get("documents")
-        .and_then(|d| d.as_array())
-        .cloned()
-        .unwrap_or_default();
-
-    let members: Vec<Value> = member_docs
-        .iter()
-        .map(|doc| {
-            json!({
-                "uid": get_doc_string_field(doc, "uid").unwrap_or_else(|| doc.get("name").and_then(|n| n.as_str()).map(extract_document_id).unwrap_or_default()),
-                "role": get_doc_string_field(doc, "role").unwrap_or_default(),
-                "status": get_doc_string_field(doc, "status").unwrap_or_default(),
-                "joined_at": get_doc_string_field(doc, "joined_at")
-            })
-        })
-        .collect();
+    let host = get_doc_string_field(&household_doc, "host").unwrap_or_default();
+    let name = get_doc_string_field(&household_doc, "name").unwrap_or_default();
+    let members = get_doc_array_field(&household_doc, "members");
+    let is_host = member_uid == host;
 
     (
         StatusCode::OK,
         Json(json!({
             "success": true,
-            "household": {
-                "household_id": household_id,
-                "name": get_doc_string_field(&household_doc, "name").unwrap_or_default(),
-                "owner_uid": get_doc_string_field(&household_doc, "owner_uid").unwrap_or_default(),
-                "created_at": get_doc_string_field(&household_doc, "created_at")
-            },
+            "household_id": household_id,
+            "name": name,
+            "host": host,
             "members": members,
-            "member_count": members.len()
+            "is_host": is_host
         })),
     )
         .into_response()
 }
 
-pub async fn create_join_request(
+// ============ GENERATE INVITE CODE ============
+
+const INVITE_CODE_PREFIX: &str = "HH";
+const INVITE_EXPIRY_HOURS: i64 = 24;
+
+fn generate_invite_code() -> String {
+    let uuid_part = Uuid::new_v4().simple().to_string();
+    let short_code = &uuid_part[0..6].to_uppercase();
+    format!("{}-{}", INVITE_CODE_PREFIX, short_code)
+}
+
+pub async fn generate_household_invite(
     Path(household_id): Path<String>,
     State(firebase_config): State<FirebaseConfig>,
-    Json(request): Json<JoinHouseholdRequest>,
+    Json(request): Json<GenerateInviteRequest>,
 ) -> impl IntoResponse {
-    if request.requester_uid.trim().is_empty() {
+    if request.actor_uid.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({"error": "requester_uid is required"})),
+            Json(json!({"error": "actor_uid is required"})),
         )
             .into_response();
     }
 
     let client = Client::new();
 
-    let already_member = match is_approved_member(
-        &client,
-        &firebase_config,
-        &household_id,
-        &request.requester_uid,
-    )
-    .await
-    {
-        Ok(v) => v,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Failed to verify membership", "details": e})),
-            )
-                .into_response()
-        }
-    };
-
-    if already_member {
-        return (
-            StatusCode::CONFLICT,
-            Json(json!({"error": "User is already an approved member"})),
-        )
-            .into_response();
-    }
-
-    let requests_url = format!(
-        "{}/households/{}/join_requests",
+    // Fetch household to verify actor is host
+    let household_url = format!(
+        "{}/households/{}",
         firebase_config.firestore_url(),
         household_id
     );
 
-    let existing_requests_resp = match client.get(&requests_url).send().await {
+    let household_resp = match client.get(&household_url).send().await {
         Ok(r) => r,
-        Err(e) => {
+        Err(_) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Failed to check existing requests", "details": e.to_string()})),
+                Json(json!({"error": "Failed to fetch household"})),
             )
                 .into_response();
         }
     };
 
-    if existing_requests_resp.status().is_success() {
-        let payload: Value = existing_requests_resp.json().await.unwrap_or_else(|_| json!({}));
-        let docs = payload
-            .get("documents")
-            .and_then(|d| d.as_array())
-            .cloned()
-            .unwrap_or_default();
+    if !household_resp.status().is_success() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "Household not found"})),
+        )
+            .into_response();
+    }
 
-        let duplicate_pending = docs.iter().any(|doc| {
-            get_doc_string_field(doc, "requester_uid").as_deref() == Some(&request.requester_uid)
-                && get_doc_string_field(doc, "status").as_deref() == Some("pending")
-        });
-
-        if duplicate_pending {
+    let household_doc: Value = match household_resp.json().await {
+        Ok(doc) => doc,
+        Err(_) => {
             return (
-                StatusCode::CONFLICT,
-                Json(json!({"error": "Pending request already exists"})),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Failed to parse household"})),
             )
                 .into_response();
         }
+    };
+
+    let host = get_doc_string_field(&household_doc, "host").unwrap_or_default();
+    if host != request.actor_uid {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": "Only host can generate invites"})),
+        )
+            .into_response();
     }
 
-    let request_id = generate_unique_id("joinreq");
-    let post_url = format!(
-        "{}/households/{}/join_requests?documentId={}",
-        firebase_config.firestore_url(),
-        household_id,
-        request_id
+    // Generate code and set on household doc
+    let invite_code = generate_invite_code();
+    let now = Utc::now();
+    let expires_at = now + Duration::hours(INVITE_EXPIRY_HOURS);
+
+    let update_url = format!(
+        "{}?updateMask.fieldPaths=invite_code&updateMask.fieldPaths=invite_expires_at",
+        household_url
     );
 
-    let payload = json!({
+    let update_payload = json!({
         "fields": {
-            "requester_uid": {"stringValue": request.requester_uid},
-            "requested_role": {"stringValue": request.requested_role.unwrap_or_else(|| "member".to_string())},
-            "status": {"stringValue": "pending"},
-            "created_at": {"stringValue": Utc::now().to_rfc3339()}
+            "invite_code": {"stringValue": invite_code.clone()},
+            "invite_expires_at": {"stringValue": expires_at.to_rfc3339()}
         }
     });
 
-    let response = match client.post(&post_url).json(&payload).send().await {
+    let update_resp = match client.patch(&update_url).json(&update_payload).send().await {
         Ok(r) => r,
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Failed to create join request", "details": e.to_string()})),
+                Json(json!({"error": "Failed to set invite code", "details": e.to_string()})),
             )
                 .into_response();
         }
     };
 
-    if !response.status().is_success() {
-        let body = response.text().await.unwrap_or_default();
+    if !update_resp.status().is_success() {
+        let body = update_resp.text().await.unwrap_or_default();
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": "Failed to create join request", "details": body})),
+            Json(json!({"error": "Failed to set invite code", "details": body})),
         )
             .into_response();
     }
@@ -501,369 +403,287 @@ pub async fn create_join_request(
         StatusCode::CREATED,
         Json(json!({
             "success": true,
+            "invite_code": invite_code,
             "household_id": household_id,
-            "request_id": request_id,
-            "status": "pending"
+            "expires_at": expires_at.to_rfc3339()
         })),
     )
         .into_response()
 }
 
-pub async fn list_join_requests(
-    Path(household_id): Path<String>,
+// ============ REDEEM INVITE CODE ============
+
+pub async fn redeem_household_invite(
     State(firebase_config): State<FirebaseConfig>,
-    Query(query): Query<HashMap<String, String>>,
+    Json(request): Json<RedeemInviteRequest>,
 ) -> impl IntoResponse {
-    let actor_uid = query.get("actor_uid").cloned().unwrap_or_default();
-    if actor_uid.trim().is_empty() {
+    if request.invite_code.trim().is_empty() || request.member_uid.trim().is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({"error": "actor_uid query is required"})),
+            Json(json!({"error": "invite_code and member_uid are required"})),
         )
             .into_response();
     }
 
     let client = Client::new();
-    let owner = match is_owner(&client, &firebase_config, &household_id, &actor_uid).await {
-        Ok(v) => v,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Failed to verify owner", "details": e})),
-            )
-                .into_response()
-        }
-    };
 
-    if !owner {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({"error": "Only owner can view join requests"})),
-        )
-            .into_response();
-    }
+    // Search for household with matching invite code
+    let households_url = format!("{}/households", firebase_config.firestore_url());
 
-    let url = format!(
-        "{}/households/{}/join_requests",
-        firebase_config.firestore_url(),
-        household_id
-    );
-
-    let response = match client.get(&url).send().await {
+    let households_resp = match client.get(&households_url).send().await {
         Ok(r) => r,
-        Err(e) => {
+        Err(_) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Failed to fetch join requests", "details": e.to_string()})),
+                Json(json!({"error": "Failed to fetch households"})),
             )
                 .into_response();
         }
     };
 
-    if response.status() == StatusCode::NOT_FOUND {
+    if !households_resp.status().is_success() {
         return (
-            StatusCode::OK,
-            Json(json!({"success": true, "requests": [], "count": 0})),
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "Household not found"})),
         )
             .into_response();
     }
 
-    if !response.status().is_success() {
-        let body = response.text().await.unwrap_or_default();
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": "Failed to fetch join requests", "details": body})),
-        )
-            .into_response();
-    }
+    let households_data: Value = match households_resp.json().await {
+        Ok(data) => data,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Failed to parse households"})),
+            )
+                .into_response();
+        }
+    };
 
-    let payload: Value = response.json().await.unwrap_or_else(|_| json!({}));
-    let docs = payload
+    // Find matching household
+    let documents = households_data
         .get("documents")
         .and_then(|d| d.as_array())
         .cloned()
         .unwrap_or_default();
 
-    let requests: Vec<Value> = docs
-        .iter()
-        .map(|doc| {
-            json!({
-                "request_id": doc.get("name").and_then(|n| n.as_str()).map(extract_document_id).unwrap_or_default(),
-                "requester_uid": get_doc_string_field(doc, "requester_uid").unwrap_or_default(),
-                "requested_role": get_doc_string_field(doc, "requested_role").unwrap_or_else(|| "member".to_string()),
-                "status": get_doc_string_field(doc, "status").unwrap_or_default(),
-                "created_at": get_doc_string_field(doc, "created_at")
-            })
-        })
-        .collect();
+    let mut matching_household: Option<(String, Value)> = None;
 
-    (
-        StatusCode::OK,
-        Json(json!({
-            "success": true,
-            "requests": requests,
-            "count": requests.len()
-        })),
-    )
-        .into_response()
-}
-
-pub async fn review_join_request(
-    Path((household_id, request_id)): Path<(String, String)>,
-    State(firebase_config): State<FirebaseConfig>,
-    Json(request): Json<ReviewJoinRequest>,
-) -> impl IntoResponse {
-    if request.action != "approve" && request.action != "reject" {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "action must be 'approve' or 'reject'"})),
-        )
-            .into_response();
-    }
-
-    let client = Client::new();
-    let owner = match is_owner(&client, &firebase_config, &household_id, &request.actor_uid).await {
-        Ok(v) => v,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Failed to verify owner", "details": e})),
-            )
-                .into_response()
-        }
-    };
-
-    if !owner {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({"error": "Only owner can review join requests"})),
-        )
-            .into_response();
-    }
-
-    let request_doc_url = format!(
-        "{}/households/{}/join_requests/{}",
-        firebase_config.firestore_url(),
-        household_id,
-        request_id
-    );
-
-    let request_doc_resp = match client.get(&request_doc_url).send().await {
-        Ok(r) => r,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Failed to fetch join request", "details": e.to_string()})),
-            )
-                .into_response();
-        }
-    };
-
-    if !request_doc_resp.status().is_success() {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({"error": "Join request not found"})),
-        )
-            .into_response();
-    }
-
-    let request_doc: Value = request_doc_resp.json().await.unwrap_or_else(|_| json!({}));
-    let requester_uid = get_doc_string_field(&request_doc, "requester_uid").unwrap_or_default();
-    let requested_role = get_doc_string_field(&request_doc, "requested_role")
-        .unwrap_or_else(|| "member".to_string());
-
-    let patch_request_url = format!(
-        "{}/households/{}/join_requests/{}?updateMask.fieldPaths=status&updateMask.fieldPaths=reviewed_at&updateMask.fieldPaths=reviewed_by",
-        firebase_config.firestore_url(),
-        household_id,
-        request_id
-    );
-
-    let patch_payload = json!({
-        "fields": {
-            "status": {"stringValue": if request.action == "approve" { "approved" } else { "rejected" }},
-            "reviewed_at": {"stringValue": Utc::now().to_rfc3339()},
-            "reviewed_by": {"stringValue": request.actor_uid}
-        }
-    });
-
-    let review_resp = match client.patch(&patch_request_url).json(&patch_payload).send().await {
-        Ok(r) => r,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Failed to update join request", "details": e.to_string()})),
-            )
-                .into_response();
-        }
-    };
-
-    if !review_resp.status().is_success() {
-        let body = review_resp.text().await.unwrap_or_default();
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": "Failed to update join request", "details": body})),
-        )
-            .into_response();
-    }
-
-    if request.action == "approve" {
-        let member_url = format!(
-            "{}/households/{}/members?documentId={}",
-            firebase_config.firestore_url(),
-            household_id,
-            requester_uid
-        );
-
-        let member_payload = json!({
-            "fields": {
-                "uid": {"stringValue": requester_uid},
-                "role": {"stringValue": requested_role},
-                "status": {"stringValue": "approved"},
-                "joined_at": {"stringValue": Utc::now().to_rfc3339()}
+    for doc in documents {
+        if let Some(stored_code) = get_doc_string_field(&doc, "invite_code") {
+            if stored_code == request.invite_code {
+                if let Some(name) = doc.get("name").and_then(|n| n.as_str()) {
+                    let household_id = extract_document_id(name);
+                    matching_household = Some((household_id, doc.clone()));
+                }
+                break;
             }
-        });
+        }
+    }
 
-        let member_resp = match client.post(&member_url).json(&member_payload).send().await {
-            Ok(r) => r,
-            Err(e) => {
+    let (household_id, household_doc) = match matching_household {
+        Some(hh) => hh,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error": "Invite code not found"})),
+            )
+                .into_response();
+        }
+    };
+
+    // Verify not expired
+    if let Some(expires_at_str) = get_doc_string_field(&household_doc, "invite_expires_at") {
+        if let Ok(expires_at) = expires_at_str.parse::<chrono::DateTime<chrono::Utc>>() {
+            if Utc::now() > expires_at {
                 return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({"error": "Join approved but failed to create member", "details": e.to_string()})),
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error": "Invite code has expired"})),
                 )
                     .into_response();
             }
-        };
-
-        if !member_resp.status().is_success() {
-            let body = member_resp.text().await.unwrap_or_default();
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Join approved but failed to create member", "details": body})),
-            )
-                .into_response();
         }
     }
 
+    // Check if already in members
+    let members = get_doc_array_field(&household_doc, "members");
+    if members.contains(&request.member_uid) {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({"error": "Member already in household"})),
+        )
+            .into_response();
+    }
+
+    // Add to members array
+    let mut new_members = members.clone();
+    new_members.push(request.member_uid.clone());
+
+    let household_url = format!(
+        "{}/households/{}?updateMask.fieldPaths=members&updateMask.fieldPaths=invite_code&updateMask.fieldPaths=invite_expires_at",
+        firebase_config.firestore_url(),
+        household_id
+    );
+
+    let members_values: Vec<Value> = new_members
+        .iter()
+        .map(|m| json!({"stringValue": m}))
+        .collect();
+
+    let update_payload = json!({
+        "fields": {
+            "members": {"arrayValue": {"values": members_values}},
+            "invite_code": {"nullValue": null},
+            "invite_expires_at": {"nullValue": null}
+        }
+    });
+
+    let update_resp = match client.patch(&household_url).json(&update_payload).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Failed to add member", "details": e.to_string()})),
+            )
+                .into_response();
+        }
+    };
+
+    if !update_resp.status().is_success() {
+        let body = update_resp.text().await.unwrap_or_default();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "Failed to add member", "details": body})),
+        )
+            .into_response();
+    }
+
+    // Store household_id on member's user doc
+    let user_url = format!(
+        "{}/users/{}?updateMask.fieldPaths=household_id",
+        firebase_config.firestore_url(),
+        request.member_uid
+    );
+
+    let user_payload = json!({
+        "fields": {
+            "household_id": {"stringValue": household_id.clone()}
+        }
+    });
+
+    let _ = client.patch(&user_url).json(&user_payload).send().await;
+
+    let household_name = get_doc_string_field(&household_doc, "name").unwrap_or_default();
+
     (
-        StatusCode::OK,
+        StatusCode::CREATED,
         Json(json!({
             "success": true,
             "household_id": household_id,
-            "request_id": request_id,
-            "action": request.action
+            "name": household_name,
+            "member_uid": request.member_uid,
+            "message": "Successfully joined household!"
         })),
     )
         .into_response()
 }
 
-pub async fn update_member_role(
-    Path((household_id, member_uid)): Path<(String, String)>,
-    State(firebase_config): State<FirebaseConfig>,
-    Json(request): Json<UpdateMemberRoleRequest>,
-) -> impl IntoResponse {
-    let allowed = ["owner", "member"];
-    if !allowed.contains(&request.role.as_str()) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "role must be owner or member"})),
-        )
-            .into_response();
-    }
-
-    let client = Client::new();
-    let owner = match is_owner(&client, &firebase_config, &household_id, &request.actor_uid).await {
-        Ok(v) => v,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Failed to verify owner", "details": e})),
-            )
-                .into_response()
-        }
-    };
-
-    if !owner {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({"error": "Only owner can update member role"})),
-        )
-            .into_response();
-    }
-
-    let patch_url = format!(
-        "{}/households/{}/members/{}?updateMask.fieldPaths=role",
-        firebase_config.firestore_url(),
-        household_id,
-        member_uid
-    );
-
-    let payload = json!({
-        "fields": {
-            "role": {"stringValue": request.role}
-        }
-    });
-
-    let response = match client.patch(&patch_url).json(&payload).send().await {
-        Ok(r) => r,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Failed to update member role", "details": e.to_string()})),
-            )
-                .into_response();
-        }
-    };
-
-    if !response.status().is_success() {
-        let body = response.text().await.unwrap_or_default();
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": "Failed to update member role", "details": body})),
-        )
-            .into_response();
-    }
-
-    (
-        StatusCode::OK,
-        Json(json!({"success": true, "member_uid": member_uid})),
-    )
-        .into_response()
-}
+// ============ REMOVE MEMBER (HOST ONLY) ============
 
 pub async fn remove_member(
     Path((household_id, member_uid)): Path<(String, String)>,
     State(firebase_config): State<FirebaseConfig>,
-    Json(request): Json<RemoveMemberRequest>,
+    Query(query): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let client = Client::new();
-    let owner = match is_owner(&client, &firebase_config, &household_id, &request.actor_uid).await {
-        Ok(v) => v,
-        Err(e) => {
+    let actor_uid = match query.get("actor_uid") {
+        Some(uid) if !uid.trim().is_empty() => uid.clone(),
+        _ => {
             return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Failed to verify owner", "details": e})),
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "actor_uid query parameter is required"})),
             )
-                .into_response()
+                .into_response();
         }
     };
 
-    if !owner {
+    let client = Client::new();
+
+    // Fetch household to verify actor is host
+    let household_url = format!(
+        "{}/households/{}",
+        firebase_config.firestore_url(),
+        household_id
+    );
+
+    let household_resp = match client.get(&household_url).send().await {
+        Ok(r) => r,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Failed to fetch household"})),
+            )
+                .into_response();
+        }
+    };
+
+    if !household_resp.status().is_success() {
         return (
-            StatusCode::FORBIDDEN,
-            Json(json!({"error": "Only owner can remove members"})),
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "Household not found"})),
         )
             .into_response();
     }
 
-    let delete_url = format!(
-        "{}/households/{}/members/{}",
-        firebase_config.firestore_url(),
-        household_id,
-        member_uid
+    let household_doc: Value = match household_resp.json().await {
+        Ok(doc) => doc,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Failed to parse household"})),
+            )
+                .into_response();
+        }
+    };
+
+    let host = get_doc_string_field(&household_doc, "host").unwrap_or_default();
+    if host != actor_uid {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": "Only host can remove members"})),
+        )
+            .into_response();
+    }
+
+    // Cannot remove the host
+    if member_uid == host {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "Cannot remove the host"})),
+        )
+            .into_response();
+    }
+
+    // Remove from members array
+    let members = get_doc_array_field(&household_doc, "members");
+    let new_members: Vec<String> = members.into_iter().filter(|m| m != &member_uid).collect();
+
+    let update_url = format!(
+        "{}?updateMask.fieldPaths=members",
+        household_url
     );
 
-    let response = match client.delete(&delete_url).send().await {
+    let members_values: Vec<Value> = new_members
+        .iter()
+        .map(|m| json!({"stringValue": m}))
+        .collect();
+
+    let update_payload = json!({
+        "fields": {
+            "members": {"arrayValue": {"values": members_values}}
+        }
+    });
+
+    let update_resp = match client.patch(&update_url).json(&update_payload).send().await {
         Ok(r) => r,
         Err(e) => {
             return (
@@ -874,8 +694,8 @@ pub async fn remove_member(
         }
     };
 
-    if !response.status().is_success() {
-        let body = response.text().await.unwrap_or_default();
+    if !update_resp.status().is_success() {
+        let body = update_resp.text().await.unwrap_or_default();
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": "Failed to remove member", "details": body})),
@@ -883,352 +703,184 @@ pub async fn remove_member(
             .into_response();
     }
 
+    // Clear household_id from member's user doc
+    let user_url = format!(
+        "{}/users/{}?updateMask.fieldPaths=household_id",
+        firebase_config.firestore_url(),
+        member_uid
+    );
+
+    let user_payload = json!({
+        "fields": {
+            "household_id": {"nullValue": null}
+        }
+    });
+
+    let _ = client.patch(&user_url).json(&user_payload).send().await;
+
     (
         StatusCode::OK,
-        Json(json!({"success": true, "removed_uid": member_uid})),
+        Json(json!({
+            "success": true,
+            "message": "Member removed"
+        })),
     )
         .into_response()
 }
 
-pub async fn list_household_schedules(
+// ============ LEAVE HOUSEHOLD (MEMBER SELF-REMOVE) ============
+
+pub async fn leave_household(
     Path(household_id): Path<String>,
     State(firebase_config): State<FirebaseConfig>,
-    Query(query): Query<HashMap<String, String>>,
+    Json(request): Json<LeaveHouseholdRequest>,
 ) -> impl IntoResponse {
-    let member_uid = query.get("member_uid").cloned().unwrap_or_default();
-    if member_uid.trim().is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "member_uid query is required"})),
-        )
-            .into_response();
-    }
-
     let client = Client::new();
-    let approved = match is_approved_member(&client, &firebase_config, &household_id, &member_uid).await {
-        Ok(v) => v,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Failed to verify membership", "details": e})),
-            )
-                .into_response()
-        }
-    };
 
-    if !approved {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({"error": "Only approved members can read schedules"})),
-        )
-            .into_response();
-    }
-
-    let url = format!(
-        "{}/households/{}/schedules",
+    // Fetch household
+    let household_url = format!(
+        "{}/households/{}",
         firebase_config.firestore_url(),
         household_id
     );
 
-    let response = match client.get(&url).send().await {
+    let household_resp = match client.get(&household_url).send().await {
         Ok(r) => r,
-        Err(e) => {
+        Err(_) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Failed to fetch schedules", "details": e.to_string()})),
+                Json(json!({"error": "Failed to fetch household"})),
             )
                 .into_response();
         }
     };
 
-    if response.status() == StatusCode::NOT_FOUND {
+    if !household_resp.status().is_success() {
         return (
-            StatusCode::OK,
-            Json(json!({"success": true, "schedules": [], "count": 0})),
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "Household not found"})),
         )
             .into_response();
     }
 
-    if !response.status().is_success() {
-        let body = response.text().await.unwrap_or_default();
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": "Failed to fetch schedules", "details": body})),
-        )
-            .into_response();
-    }
-
-    let payload: Value = response.json().await.unwrap_or_else(|_| json!({}));
-    let docs = payload
-        .get("documents")
-        .and_then(|d| d.as_array())
-        .cloned()
-        .unwrap_or_default();
-
-    let schedules: Vec<Value> = docs
-        .iter()
-        .map(|doc| {
-            json!({
-                "uid": get_doc_string_field(doc, "uid").unwrap_or_else(|| doc.get("name").and_then(|n| n.as_str()).map(extract_document_id).unwrap_or_default()),
-                "name": get_doc_string_field(doc, "name").unwrap_or_default(),
-                "time": get_doc_string_field(doc, "time").unwrap_or_default(),
-                "date": get_doc_string_field(doc, "date").unwrap_or_default(),
-                "expiry": get_doc_string_field(doc, "expiry").unwrap_or_default(),
-                "notify": doc.get("fields").and_then(|f| f.get("notify")).and_then(|v| v.get("booleanValue")).and_then(|b| b.as_bool()).unwrap_or(false),
-                "category": get_doc_string_field(doc, "category"),
-                "quantity": get_doc_string_field(doc, "quantity"),
-                "location": get_doc_string_field(doc, "location")
-            })
-        })
-        .collect();
-
-    (
-        StatusCode::OK,
-        Json(json!({"success": true, "schedules": schedules, "count": schedules.len()})),
-    )
-        .into_response()
-}
-
-pub async fn add_household_schedule(
-    Path(household_id): Path<String>,
-    State(firebase_config): State<FirebaseConfig>,
-    Json(request): Json<HouseholdAddScheduleRequest>,
-) -> impl IntoResponse {
-    let client = Client::new();
-    let approved = match is_approved_member(&client, &firebase_config, &household_id, &request.member_uid).await {
-        Ok(v) => v,
-        Err(e) => {
+    let household_doc: Value = match household_resp.json().await {
+        Ok(doc) => doc,
+        Err(_) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Failed to verify membership", "details": e})),
+                Json(json!({"error": "Failed to parse household"})),
             )
-                .into_response()
+                .into_response();
         }
     };
 
-    if !approved {
+    let host = get_doc_string_field(&household_doc, "host").unwrap_or_default();
+
+    // Host cannot leave
+    if request.member_uid == host {
         return (
-            StatusCode::FORBIDDEN,
-            Json(json!({"error": "Only approved members can add schedules"})),
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "Host cannot leave household"})),
         )
             .into_response();
     }
 
-    let new_id = generate_unique_id("schedule");
-    let post_url = format!(
-        "{}/households/{}/schedules?documentId={}",
-        firebase_config.firestore_url(),
-        household_id,
-        new_id
+    // Remove from members array
+    let members = get_doc_array_field(&household_doc, "members");
+    let new_members: Vec<String> = members.into_iter().filter(|m| m != &request.member_uid).collect();
+
+    let update_url = format!(
+        "{}?updateMask.fieldPaths=members",
+        household_url
     );
 
-    let payload = json!({
+    let members_values: Vec<Value> = new_members
+        .iter()
+        .map(|m| json!({"stringValue": m}))
+        .collect();
+
+    let update_payload = json!({
         "fields": {
-            "uid": {"stringValue": new_id.clone()},
-            "name": {"stringValue": request.name},
-            "time": {"stringValue": request.time},
-            "date": {"stringValue": request.date},
-            "expiry": {"stringValue": request.expiry},
-            "notify": {"booleanValue": request.notify},
-            "category": {"stringValue": request.category.clone().unwrap_or_default()},
-            "quantity": {"stringValue": request.quantity},
-            "location": {"stringValue": request.location.clone().unwrap_or_default()},
-            "created_by": {"stringValue": request.member_uid},
-            "created_at": {"stringValue": Utc::now().to_rfc3339()}
+            "members": {"arrayValue": {"values": members_values}}
         }
     });
 
-    let response = match client.post(&post_url).json(&payload).send().await {
+    let update_resp = match client.patch(&update_url).json(&update_payload).send().await {
         Ok(r) => r,
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Failed to add schedule", "details": e.to_string()})),
+                Json(json!({"error": "Failed to leave household", "details": e.to_string()})),
             )
                 .into_response();
         }
     };
 
-    if !response.status().is_success() {
-        let body = response.text().await.unwrap_or_default();
+    if !update_resp.status().is_success() {
+        let body = update_resp.text().await.unwrap_or_default();
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": "Failed to add schedule", "details": body})),
+            Json(json!({"error": "Failed to leave household", "details": body})),
         )
             .into_response();
     }
 
+    // Clear household_id from member's user doc
+    let user_url = format!(
+        "{}/users/{}?updateMask.fieldPaths=household_id",
+        firebase_config.firestore_url(),
+        request.member_uid
+    );
+
+    let user_payload = json!({
+        "fields": {
+            "household_id": {"nullValue": null}
+        }
+    });
+
+    let _ = client.patch(&user_url).json(&user_payload).send().await;
+
     (
-        StatusCode::CREATED,
-        Json(json!({"success": true, "schedule_id": new_id})),
+        StatusCode::OK,
+        Json(json!({
+            "success": true,
+            "message": "Successfully left household"
+        })),
     )
         .into_response()
 }
 
-pub async fn list_household_grocery_lists(
-    Path(household_id): Path<String>,
-    State(firebase_config): State<FirebaseConfig>,
-    Query(query): Query<HashMap<String, String>>,
-) -> impl IntoResponse {
-    let member_uid = query.get("member_uid").cloned().unwrap_or_default();
-    if member_uid.trim().is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "member_uid query is required"})),
-        )
-            .into_response();
-    }
+// ============ HELPER: VERIFY MEMBER ACCESS ============
 
-    let client = Client::new();
-    let approved = match is_approved_member(&client, &firebase_config, &household_id, &member_uid).await {
-        Ok(v) => v,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Failed to verify membership", "details": e})),
-            )
-                .into_response()
-        }
-    };
-
-    if !approved {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({"error": "Only approved members can read grocery"})),
-        )
-            .into_response();
-    }
-
-    let url = format!(
-        "{}/households/{}/grocery",
+pub async fn is_member_or_host(
+    client: &Client,
+    firebase_config: &FirebaseConfig,
+    household_id: &str,
+    member_uid: &str,
+) -> Result<bool, String> {
+    let household_url = format!(
+        "{}/households/{}",
         firebase_config.firestore_url(),
         household_id
     );
 
-    let response = match client.get(&url).send().await {
-        Ok(r) => r,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Failed to fetch grocery", "details": e.to_string()})),
-            )
-                .into_response();
-        }
-    };
+    let resp = client
+        .get(&household_url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
 
-    if response.status() == StatusCode::NOT_FOUND {
-        return (
-            StatusCode::OK,
-            Json(json!({"success": true, "lists": [], "count": 0})),
-        )
-            .into_response();
+    if !resp.status().is_success() {
+        return Ok(false);
     }
 
-    if !response.status().is_success() {
-        let body = response.text().await.unwrap_or_default();
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": "Failed to fetch grocery", "details": body})),
-        )
-            .into_response();
+    let doc: Value = resp.json().await.map_err(|e| e.to_string())?;
+
+    let host = get_doc_string_field(&doc, "host").unwrap_or_default();
+    if member_uid == host {
+        return Ok(true);
     }
 
-    let payload: Value = response.json().await.unwrap_or_else(|_| json!({}));
-    let docs = payload
-        .get("documents")
-        .and_then(|d| d.as_array())
-        .cloned()
-        .unwrap_or_default();
-
-    let lists: Vec<Value> = docs
-        .iter()
-        .map(|doc| {
-            json!({
-                "list_id": doc.get("name").and_then(|n| n.as_str()).map(extract_document_id).unwrap_or_default(),
-                "list_name": get_doc_string_field(doc, "list_name").unwrap_or_else(|| "Unnamed List".to_string())
-            })
-        })
-        .collect();
-
-    (
-        StatusCode::OK,
-        Json(json!({"success": true, "lists": lists, "count": lists.len()})),
-    )
-        .into_response()
-}
-
-pub async fn create_household_grocery_list(
-    Path(household_id): Path<String>,
-    State(firebase_config): State<FirebaseConfig>,
-    Json(request): Json<HouseholdCreateGroceryListRequest>,
-) -> impl IntoResponse {
-    let client = Client::new();
-    let approved = match is_approved_member(&client, &firebase_config, &household_id, &request.member_uid).await {
-        Ok(v) => v,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Failed to verify membership", "details": e})),
-            )
-                .into_response()
-        }
-    };
-
-    if !approved {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({"error": "Only approved members can create grocery lists"})),
-        )
-            .into_response();
-    }
-
-    if request.list_name.trim().is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "list_name is required"})),
-        )
-            .into_response();
-    }
-
-    let list_id = generate_unique_id("grocery");
-    let post_url = format!(
-        "{}/households/{}/grocery?documentId={}",
-        firebase_config.firestore_url(),
-        household_id,
-        list_id
-    );
-
-    let payload = json!({
-        "fields": {
-            "list_name": {"stringValue": request.list_name},
-            "created_by": {"stringValue": request.member_uid},
-            "created_at": {"stringValue": Utc::now().to_rfc3339()}
-        }
-    });
-
-    let response = match client.post(&post_url).json(&payload).send().await {
-        Ok(r) => r,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Failed to create grocery list", "details": e.to_string()})),
-            )
-                .into_response();
-        }
-    };
-
-    if !response.status().is_success() {
-        let body = response.text().await.unwrap_or_default();
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": "Failed to create grocery list", "details": body})),
-        )
-            .into_response();
-    }
-
-    (
-        StatusCode::CREATED,
-        Json(json!({"success": true, "list_id": list_id, "list_name": request.list_name})),
-    )
-        .into_response()
+    let members = get_doc_array_field(&doc, "members");
+    Ok(members.contains(&member_uid.to_string()))
 }

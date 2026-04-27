@@ -1,6 +1,7 @@
 use crate::{
     structures::structs::{AddRecipeRequest, AddScheduleRequest},
     FirebaseConfig,
+    tests::api_contract,
 };
 use axum::{
     extract::{Path, State},
@@ -147,7 +148,7 @@ pub async fn firestore_add_schedule(
     }
 
     // Optional: Return confirmation
-    Json(json!({
+    let response_json = json!({
         "success": true,
         "message": format!("Schedule '{}' added successfully", request.name),
         "schedule": {
@@ -162,8 +163,16 @@ pub async fn firestore_add_schedule(
             "notify": request.notify,
         },
         "updated_at": chrono::Utc::now().to_rfc3339()
-    }))
-    .into_response()
+    });
+    
+    // ✅ Validate schedule response shape matches frontend contract
+    if let Some(schedule_obj) = response_json.get("schedule") {
+        if let Err(validation_error) = api_contract::validate_schedule_contract(schedule_obj) {
+            eprintln!("⚠️ API CONTRACT VIOLATION in PATCH /add/schedules/{{uuid}} response: {}", validation_error);
+        }
+    }
+    
+    Json(response_json).into_response()
 }
 #[axum::debug_handler]
 pub async fn firestore_add_recipe(
@@ -260,18 +269,29 @@ pub async fn firestore_add_recipe(
     }
 
     // Respond with confirmation
-    Json(json!({
+    let response_json = json!({
         "success": true,
         "message": format!("Recipe '{}' added successfully", request.name),
                "recipe": {
+                   "uid": new_id,
                    "name": request.name,
                    "ingredients": request.ingredients,
                    "steps": request.steps,
-                   "time": request.time
+                   "time": request.time,
+                   "image_url": request.image_url,
+                   "quantity": request.quantity
                },
                "updated_at": chrono::Utc::now().to_rfc3339()
-    }))
-    .into_response()
+    });
+    
+    // ✅ Validate recipe response shape matches frontend contract
+    if let Some(recipe_obj) = response_json.get("recipe") {
+        if let Err(validation_error) = api_contract::validate_recipe_contract(recipe_obj) {
+            eprintln!("⚠️ API CONTRACT VIOLATION in PATCH /add/recipes/{{uuid}} response: {}", validation_error);
+        }
+    }
+    
+    Json(response_json).into_response()
 }
 
 pub async fn firestore_change_schedule(
@@ -279,6 +299,13 @@ pub async fn firestore_change_schedule(
     State(firebase_config): State<FirebaseConfig>,
     Json(payload): Json<PatchScheduleRequest>,
 ) -> impl IntoResponse {
+    // ⚠️ DEPRECATION WARNING: This endpoint accepts legacy Firestore REST payload format.
+    // Frontend developers: Please migrate to the clean JSON contract using:
+    // - PATCH /add/schedules/{uuid} for creating schedules
+    // - Individual field updates via dedicated endpoints
+    // See docs/schedule-location-frontend.md#section-4.2 for migration details.
+    eprintln!("⚠️ DEPRECATED: PATCH /change/schedules/{{uuid}} called with Firestore REST format. Frontend should migrate to clean JSON contract.");
+    
     let client = Client::new();
 
     let mut updated_count = 0usize;

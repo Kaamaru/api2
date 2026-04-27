@@ -1,7 +1,7 @@
 use crate::firebase::{FirebaseConfig, GeminiConfig};
 use crate::structures::models::{
     ChatRequest, ClassifyResponse, GeminiContent, GeminiPart, GeminiRequest, GeminiResponse,
-    GenerationConfig, InlineImageData, SystemInstruction,
+    GenerationConfig, InlineImageData, SystemInstruction, PeopleContextItem,
 };
 use crate::tasks::firestore::recipe::{insert_dishname, insert_recipe};
 use crate::tasks::getimage::get_one_image;
@@ -227,9 +227,37 @@ async fn try_generate_recipes(payload: &ChatRequest) -> Result<Value, StatusCode
         _ => String::new(),
     };
 
-    let people_context = if let (Some(userid), Some(selected_people_ids)) =
+    // Build people context either from direct people_context field or from userid/selected_people_ids
+    let people_context = if let Some(ref people_items) = payload.people_context {
+        if !people_items.is_empty() {
+            // Direct people context provided - use it
+            let mut lines = vec![
+                "Additional user instructions based on selected people preferences:".to_string(),
+            ];
+            for person in people_items {
+                let prefs = if person.preference.is_empty() {
+                    "none".to_string()
+                } else {
+                    person.preference.join(", ")
+                };
+                let allergies = if person.allergy.is_empty() {
+                    "none".to_string()
+                } else {
+                    person.allergy.join(", ")
+                };
+                lines.push(format!(
+                    "- {}: preferences [{}], allergies [{}]",
+                    person.name, prefs, allergies
+                ));
+            }
+            lines.join("\n")
+        } else {
+            String::new()
+        }
+    } else if let (Some(userid), Some(selected_people_ids)) =
         (payload.userid.as_ref(), payload.selected_people_ids.as_ref())
     {
+        // Fallback to fetching from userid/selected_people_ids for backward compatibility
         build_people_prompt_context(userid, selected_people_ids)
             .await
             .unwrap_or_default()

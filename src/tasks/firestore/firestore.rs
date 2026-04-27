@@ -7,6 +7,7 @@ use crate::{
         GroceryList, Hardware, HardwareField, PersonProfile, Recipe, RecipeField, Schedule, User,
         FirestoreHardwareMapField,
     },
+    tests::api_contract,
 };
 use axum::{
     extract::{Json, Path, State},
@@ -640,7 +641,7 @@ pub async fn handle_get_user_by_uid(
     };
 
     // Return JSON response matching your original format
-    Json(json!({
+    let response_json = json!({
         "email": email,
         "username": username,
         "savedrecipes": saved_recipes.into_iter().map(|recipe| json!({
@@ -686,8 +687,16 @@ pub async fn handle_get_user_by_uid(
             "devices": hw.devices,
             "requests": hw.requests
         })).unwrap_or(json!(null))
-    }))
-    .into_response()
+    });
+    
+    // ✅ Validate response shape matches frontend contract
+    if let Err(validation_error) = api_contract::validate_user_aggregate_contract(&response_json) {
+        eprintln!("⚠️ API CONTRACT VIOLATION in /user/{{uid}} response: {}", validation_error);
+        // Log the violation but still return the response for now
+        // This helps frontend developers catch contract drift during development
+    }
+    
+    Json(response_json).into_response()
 }
 
 // Helper function to convert Firestore format to clean format

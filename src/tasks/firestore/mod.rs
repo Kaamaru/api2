@@ -5,3 +5,4 @@ pub mod grocery;
 pub mod recipe;
 pub mod people;
 pub mod household;
+pub mod household_extended;

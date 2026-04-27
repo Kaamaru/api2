@@ -41,7 +41,7 @@ mod tools {
 use crate::{
     tasks::{
         basic,
-        firestore::{firestore::*, modify::*, notify::*, grocery::*, recipe::*},
+        firestore::{firestore::*, household::*, modify::*, notify::*, grocery::*, people::*, recipe::*},
         gemini::*,
         getimage::*,
         hardware::{device::*, tractor::tract_test,requests::*},
@@ -152,6 +152,19 @@ async fn main() {
         .route("/{userid}/{list_id}/items/{item_id}", patch(update_grocery_item).delete(delete_grocery_item))
         .route("/{userid}/{list_id}/items/{item_id}/to-schedule", post(convert_grocery_to_schedule));
 
+    let people = Router::new()
+        .route("/{userid}", get(get_people_profiles).post(create_person_profile))
+        .route("/{userid}/{person_id}", patch(update_person_profile).delete(delete_person_profile));
+
+    let households = Router::new()
+        .route("/", post(create_household))
+        .route("/{household_id}", get(get_household_summary))
+        .route("/{household_id}/join-requests", get(list_join_requests).post(create_join_request))
+        .route("/{household_id}/join-requests/{request_id}", patch(review_join_request))
+        .route("/{household_id}/members/{member_uid}", patch(update_member_role).delete(remove_member))
+        .route("/{household_id}/schedules", get(list_household_schedules).post(add_household_schedule))
+        .route("/{household_id}/grocery", get(list_household_grocery_lists).post(create_household_grocery_list));
+
     let search = Router::new()
         .route("/recipes", get(search_recipe_handler))
         .route("/recipes/{id}", get(get_recipe_by_id_handler))
@@ -175,6 +188,8 @@ async fn main() {
         .nest("/add", add_datas)
         .nest("/notify", notify)
         .nest("/grocery", grocery)
+        .nest("/people", people)
+        .nest("/households", households)
         .nest("/hardware", hardware)
         .nest("/search", search)
         .layer(cors)

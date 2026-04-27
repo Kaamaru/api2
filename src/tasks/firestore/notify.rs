@@ -1,7 +1,4 @@
-use crate::{
-    structures::structs::{FirestoreUserResponse, Schedule},
-    FirebaseConfig,
-};
+use crate::{structures::structs::Schedule, FirebaseConfig};
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -9,8 +6,7 @@ use axum::{
 };
 use chrono::TimeZone;
 use reqwest::Client;
-use serde_json::json;
-use serde::Serialize;
+use serde_json::{json, Value};
 
 
 
@@ -39,24 +35,15 @@ async fn set_notify_value(
 ) -> impl IntoResponse {
     let client = Client::new();
     let patch_url = format!(
-        "{}/users/{}?updateMask.fieldPaths=schedules.{}.notify",
+        "{}/users/{}/schedules/{}?updateMask.fieldPaths=notify",
         firebase_config.firestore_url(),
         uuid,
         schedule_id
     );
 
-    let mut payload = json!({
+    let payload = json!({
         "fields": {
-            "schedules": { "mapValue": { "fields": {} } }
-        }
-    });
-
-    // Dynamically set: fields.schedules.mapValue.fields.<schedule_id>.mapValue.fields.notify
-    payload["fields"]["schedules"]["mapValue"]["fields"][schedule_id.clone()] = json!({
-        "mapValue": {
-            "fields": {
-                "notify": { "booleanValue": value }
-            }
+            "notify": { "booleanValue": value }
         }
     });
 
@@ -74,6 +61,13 @@ async fn set_notify_value(
 
     if !resp.status().is_success() {
         let status = resp.status();
+        if status == StatusCode::NOT_FOUND {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "Schedule not found" })),
+            )
+                .into_response();
+        }
         let body = resp.text().await.unwrap_or_else(|_| "".to_string());
         eprintln!("Firestore PATCH failed: {} - {}", status, body);
         return (
@@ -95,6 +89,85 @@ async fn set_notify_value(
         .into_response()
 }
 
+fn extract_doc_id(name: &str) -> String {
+    name.rsplit('/').next().unwrap_or_default().to_string()
+}
+
+fn parse_schedule_doc(schedule_doc: &Value) -> Schedule {
+    let get_s = |k: &str| {
+        schedule_doc
+            .get("fields")
+            .and_then(|f| f.get(k))
+            .and_then(|v| v.get("stringValue"))
+            .and_then(|s| s.as_str())
+            .map(|s| s.to_string())
+    };
+
+    let get_b = |k: &str| {
+        schedule_doc
+            .get("fields")
+            .and_then(|f| f.get(k))
+            .and_then(|v| v.get("booleanValue"))
+            .and_then(|b| b.as_bool())
+    };
+
+    let uid = get_s("uid").unwrap_or_else(|| {
+        schedule_doc
+            .get("name")
+            .and_then(|n| n.as_str())
+            .map(extract_doc_id)
+            .unwrap_or_default()
+    });
+
+    Schedule {
+        name: get_s("name").unwrap_or_default(),
+        time: get_s("time").unwrap_or_default(),
+        date: get_s("date").unwrap_or_default(),
+        expiry: get_s("expiry").unwrap_or_default(),
+        uid,
+        notify: get_b("notify").unwrap_or(false),
+        category: get_s("category"),
+        quantity: get_s("quantity"),
+        location: get_s("location"),
+    }
+}
+
+async fn fetch_user_schedules(
+    client: &Client,
+    firebase_config: &FirebaseConfig,
+    uuid: &str,
+) -> Result<Vec<Schedule>, String> {
+    let url = format!("{}/users/{}/schedules", firebase_config.firestore_url(), uuid);
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to call Firestore: {}", e))?;
+
+    if resp.status() == StatusCode::NOT_FOUND {
+        return Ok(vec![]);
+    }
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("Firestore read failed {}: {}", status, body));
+    }
+
+    let parsed: Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse Firestore response: {}", e))?;
+
+    let docs: Vec<Value> = parsed
+        .get("documents")
+        .and_then(|d| d.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    Ok(docs.iter().map(parse_schedule_doc).collect())
+}
+
 
 
 // GET on: notify/get_notified/{uuid}
@@ -102,10 +175,9 @@ pub async fn firestore_get_notify_schedule_all(
     Path(uuid): Path<String>,
     State(firebase_config): State<FirebaseConfig>,
 ) -> impl IntoResponse {
-    let url = format!("{}/users/{}", firebase_config.firestore_url(), uuid);
-    
-    let resp = match reqwest::get(&url).await {
-        Ok(r) => r,
+    let client = Client::new();
+    let schedules = match fetch_user_schedules(&client, &firebase_config, &uuid).await {
+        Ok(s) => s,
         Err(e) => {
             eprintln!("Failed to call Firestore: {}", e);
             return (
@@ -116,69 +188,7 @@ pub async fn firestore_get_notify_schedule_all(
         }
     };
 
-    let text = match resp.text().await {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("Failed to read response body: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": "Failed to read response" })),
-            )
-                .into_response();
-        }
-    };
-
-    let parsed: serde_json::Value = match serde_json::from_str(&text) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("Failed to parse Firestore response: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": "Failed to parse Firestore data" })),
-            )
-                .into_response();
-        }
-    };
-
-    let mut notified_schedules: Vec<Schedule> = Vec::new();
-
-    // Handle single document response (has "fields" at top level)
-    if let Some(fields) = parsed.get("fields").and_then(|f| f.as_object()) {
-        if let Some(schedules) = fields.get("schedules") {
-            if let Some(map_fields) = schedules.get("mapValue").and_then(|m| m.get("fields")).and_then(|f| f.as_object()) {
-                for (_key, item) in map_fields {
-                    if let Some(detail) = item.get("mapValue").and_then(|m| m.get("fields")).and_then(|f| f.as_object()) {
-                        let notify = detail
-                            .get("notify")
-                            .and_then(|n| n.get("booleanValue"))
-                            .and_then(|b| b.as_bool())
-                            .unwrap_or(false);
-
-                        if notify {
-                            let name = detail.get("name").and_then(|n| n.get("stringValue")).and_then(|s| s.as_str()).unwrap_or("").to_string();
-                            let time = detail.get("time").and_then(|t| t.get("stringValue")).and_then(|s| s.as_str()).unwrap_or("").to_string();
-                            let date = detail.get("date").and_then(|d| d.get("stringValue")).and_then(|s| s.as_str()).unwrap_or("").to_string();
-                            let expiry = detail.get("expiry").and_then(|e| e.get("stringValue")).and_then(|s| s.as_str()).unwrap_or("").to_string();
-                            let uid = detail.get("uid").and_then(|u| u.get("stringValue")).and_then(|s| s.as_str()).unwrap_or("").to_string();
-                            let category = detail.get("category").and_then(|c| c.get("stringValue")).and_then(|s| s.as_str()).map(|s| s.to_string());
-                            let quantity = detail.get("quantity").and_then(|c| c.get("stringValue")).and_then(|s| s.as_str()).map(|s| s.to_string());
-
-                            notified_schedules.push(Schedule {
-                                name,
-                                time,
-                                date,
-                                expiry,
-                                uid,
-                                notify,
-                                category,
-                                quantity,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-    }
+    let notified_schedules: Vec<Schedule> = schedules.into_iter().filter(|s| s.notify).collect();
 
     (StatusCode::OK, Json(json!({
         "schedules": notified_schedules,
@@ -187,9 +197,13 @@ pub async fn firestore_get_notify_schedule_all(
 }
 // Regular function (non-axum) to get notified users and their schedules that expire within 3 days
 pub async fn firestore_get_notified_users_schedules() -> Result<Vec<serde_json::Value>, String> {
-    let url = format!("{}/users", crate::firebase::FirebaseConfig::from_env().firestore_url());
+    let firebase_config = crate::firebase::FirebaseConfig::from_env();
+    let url = format!("{}/users", firebase_config.firestore_url());
+    let client = Client::new();
 
-    let resp = reqwest::get(&url)
+    let resp = client
+        .get(&url)
+        .send()
         .await
         .map_err(|e| format!("Failed to call Firestore: {}", e))?;
 
@@ -198,93 +212,77 @@ pub async fn firestore_get_notified_users_schedules() -> Result<Vec<serde_json::
         .await
         .map_err(|e| format!("Failed to read response body: {}", e))?;
 
-    let parsed: FirestoreUserResponse = serde_json::from_str(&text)
+    let parsed: Value = serde_json::from_str(&text)
         .map_err(|e| format!("Failed to parse Firestore response: {}", e))?;
+
+    let user_docs: Vec<Value> = parsed
+        .get("documents")
+        .and_then(|d| d.as_array())
+        .cloned()
+        .unwrap_or_default();
 
     let mut users_with_notified: Vec<serde_json::Value> = Vec::new();
     let now = chrono::Utc::now();
 
-    for doc in parsed.documents {
-        if let Some(fields) = doc.fields {
-            // Build list of this user's notified schedules that expire within 3 days
-            let mut schedule_list: Vec<Schedule> = Vec::new();
-            if let Some(schedules) = fields.schedules {
-                for (_key, item) in schedules.map_value.fields {
-                    let detail = item.map_value.fields;
+    for user_doc in user_docs {
+        let user_name = user_doc
+            .get("name")
+            .and_then(|n| n.as_str())
+            .unwrap_or_default();
+        let uid = extract_doc_id(user_name);
+        if uid.is_empty() {
+            continue;
+        }
 
-                    let notify = detail
-                        .notify
-                        .as_ref()
-                        .map(|n| n.booleanValue)
-                        .unwrap_or(false);
+        let user_identifier = user_doc
+            .get("fields")
+            .and_then(|f| f.get("email"))
+            .and_then(|v| v.get("stringValue"))
+            .and_then(|s| s.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| {
+                user_doc
+                    .get("fields")
+                    .and_then(|f| f.get("username"))
+                    .and_then(|v| v.get("stringValue"))
+                    .and_then(|s| s.as_str())
+                    .map(|s| s.to_string())
+            });
 
-                    // Only include if notify is true
-                    if notify {
-                        // Check if expiry is within 3 days
-                        let expiry_str = detail.expiry
-                            .as_ref()
-                            .map(|e| e.stringValue.clone())
-                            .unwrap_or_default();
+        let user_id = match user_identifier {
+            Some(v) => v,
+            None => continue,
+        };
 
-                        // Parse expiry date in multiple formats
-                        let is_expiring_soon = if let Ok(date) = chrono::DateTime::parse_from_rfc3339(&expiry_str) {
-                            let expiry_date = date.with_timezone(&chrono::Utc);
-                            let time_until_expiry = expiry_date - now;
-                            time_until_expiry.num_days() <= 3 && time_until_expiry.num_seconds() >= 0
-                        } else if let Ok(date) = chrono::NaiveDate::parse_from_str(&expiry_str, "%Y-%m-%d") {
-                            let datetime = chrono::Utc.from_utc_datetime(
-                                &chrono::NaiveDateTime::new(date, chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap())
-                            );
-                            let time_until_expiry = datetime - now;
-                            time_until_expiry.num_days() <= 3 && time_until_expiry.num_seconds() >= 0
-                        } else {
-                            false
-                        };
+        let schedules = fetch_user_schedules(&client, &firebase_config, &uid).await?;
+        let mut schedule_list: Vec<Schedule> = Vec::new();
 
-                        if is_expiring_soon {
-                            schedule_list.push(Schedule {
-                                name: detail.name
-                                    .as_ref()
-                                    .map(|n| n.stringValue.clone())
-                                    .unwrap_or_default(),
-                                time: detail.time
-                                    .as_ref()
-                                    .map(|t| t.stringValue.clone())
-                                    .unwrap_or_default(),
-                                date: detail.date
-                                    .as_ref()
-                                    .map(|d| d.stringValue.clone())
-                                    .unwrap_or_default(),
-                                expiry: expiry_str,
-                                uid: detail.uid
-                                    .as_ref()
-                                    .map(|u| u.stringValue.clone())
-                                    .unwrap_or_default(),
-                                notify,
-                                category: detail.category.as_ref().map(|c| c.stringValue.clone()),
-                                quantity: detail.quantity.as_ref().map(|q| q.stringValue.clone()),
-                            });
-                        }
-                    }
-                }
+        for schedule in schedules.into_iter().filter(|s| s.notify) {
+            let expiry_str = schedule.expiry.clone();
+            let is_expiring_soon = if let Ok(date) = chrono::DateTime::parse_from_rfc3339(&expiry_str) {
+                let expiry_date = date.with_timezone(&chrono::Utc);
+                let time_until_expiry = expiry_date - now;
+                time_until_expiry.num_days() <= 3 && time_until_expiry.num_seconds() >= 0
+            } else if let Ok(date) = chrono::NaiveDate::parse_from_str(&expiry_str, "%Y-%m-%d") {
+                let datetime = chrono::Utc.from_utc_datetime(
+                    &chrono::NaiveDateTime::new(date, chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap())
+                );
+                let time_until_expiry = datetime - now;
+                time_until_expiry.num_days() <= 3 && time_until_expiry.num_seconds() >= 0
+            } else {
+                false
+            };
+
+            if is_expiring_soon {
+                schedule_list.push(schedule);
             }
+        }
 
-            if !schedule_list.is_empty() {
-                // Prefer email as user_id, else fallback to username
-                let user_id = if let Some(email) = &fields.email {
-                    email.stringValue.clone()
-                } else if let Some(username) = &fields.username {
-                    username.stringValue.clone()
-                } else {
-                    // If no identifier present, skip this user
-                    continue;
-                };
-
-                users_with_notified.push(json!({
-                    "user_id": user_id,
-                    "schedules": schedule_list,
-                }));
-            }
+        if !schedule_list.is_empty() {
+            users_with_notified.push(json!({
+                "user_id": user_id,
+                "schedules": schedule_list,
+            }));
         }
     }
 

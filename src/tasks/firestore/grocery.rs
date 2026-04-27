@@ -24,6 +24,94 @@ fn generate_unique_id() -> String {
     format!("{}_{}", uuid, now)
 }
 
+fn extract_document_id(document_name: &str) -> String {
+    document_name
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn get_doc_string_field(doc: &Value, key: &str) -> Option<String> {
+    doc.get("fields")
+        .and_then(|f| f.get(key))
+        .and_then(|v| v.get("stringValue"))
+        .and_then(|s| s.as_str())
+        .map(|s| s.to_string())
+}
+
+fn get_doc_bool_field(doc: &Value, key: &str) -> Option<bool> {
+    doc.get("fields")
+        .and_then(|f| f.get(key))
+        .and_then(|v| v.get("booleanValue"))
+        .and_then(|b| b.as_bool())
+}
+
+fn parse_grocery_items_from_documents(documents: &[Value]) -> Vec<GroceryItem> {
+    let mut items = Vec::new();
+
+    for doc in documents {
+        let uid = doc
+            .get("name")
+            .and_then(|n| n.as_str())
+            .map(extract_document_id)
+            .unwrap_or_default();
+
+        items.push(GroceryItem {
+            uid,
+            name: get_doc_string_field(doc, "name").unwrap_or_default(),
+            quantity: get_doc_string_field(doc, "quantity").unwrap_or_default(),
+            unit: get_doc_string_field(doc, "unit").unwrap_or_default(),
+            checked: get_doc_bool_field(doc, "checked").unwrap_or(false),
+        });
+    }
+
+    items
+}
+
+async fn fetch_grocery_items_for_list(
+    client: &Client,
+    firebase_config: &FirebaseConfig,
+    userid: &str,
+    list_id: &str,
+) -> Result<Vec<GroceryItem>, String> {
+    let items_url = format!(
+        "{}/users/{}/grocery/{}/items",
+        firebase_config.firestore_url(),
+        userid,
+        list_id
+    );
+
+    let resp = client
+        .get(&items_url)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch grocery items: {e}"))?;
+
+    if resp.status() == StatusCode::NOT_FOUND {
+        return Ok(vec![]);
+    }
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("Failed to fetch items {status}: {body}"));
+    }
+
+    let data: Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse grocery items: {e}"))?;
+
+    let docs: Vec<Value> = data
+        .get("documents")
+        .and_then(|d| d.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    Ok(parse_grocery_items_from_documents(&docs))
+}
+
 // ===== GET Endpoints =====
 
 /// Get all grocery lists for a user
@@ -33,98 +121,104 @@ pub async fn get_grocery_lists(
 ) -> impl IntoResponse {
     println!("get_grocery_lists for user: {}", userid);
 
-    let url = format!("{}/users/{}", firebase_config.firestore_url(), userid);
-    let resp = match reqwest::get(&url).await {
+    let client = Client::new();
+    let url = format!("{}/users/{}/grocery", firebase_config.firestore_url(), userid);
+
+    let resp = match client.get(&url).send().await {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("❌ Failed to fetch user: {}", e);
+            eprintln!("❌ Failed to fetch grocery lists: {}", e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Failed to fetch user"})),
+                Json(json!({"error": "Failed to fetch grocery lists"})),
             )
                 .into_response();
         }
     };
 
-    let text = match resp.text().await {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("❌ Failed to read response: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Failed to read response"})),
-            )
-                .into_response();
-        }
-    };
-
-    // Parse the response to find grocery field
-    match serde_json::from_str::<serde_json::Value>(&text) {
-        Ok(user_data) => {
-            if let Some(fields) = user_data.get("fields") {
-                if let Some(grocery_field) = fields.get("grocery") {
-                    if let Some(map_value) = grocery_field.get("mapValue") {
-                        if let Some(grocery_fields) = map_value.get("fields") {
-                            let mut lists = Vec::new();
-
-                            // Iterate through each grocery list
-                            if let Some(obj) = grocery_fields.as_object() {
-                                for (list_id, list_data) in obj.iter() {
-                                    if let Some(list_map_value) =
-                                        list_data.get("mapValue").and_then(|m| m.get("fields"))
-                                    {
-                                        let list_name = list_map_value
-                                            .get("list_name")
-                                            .and_then(|n| n.get("stringValue"))
-                                            .and_then(|s| s.as_str())
-                                            .unwrap_or("Unnamed List")
-                                            .to_string();
-
-                                        let items = parse_grocery_items(list_map_value);
-
-                                        lists.push(GroceryList {
-                                            list_id: list_id.clone(),
-                                            list_name,
-                                            items,
-                                        });
-                                    }
-                                }
-                            }
-
-                            return (
-                                StatusCode::OK,
-                                Json(json!({
-                                    "success": true,
-                                    "lists": lists,
-                                    "count": lists.len()
-                                })),
-                            )
-                                .into_response();
-                        }
-                    }
-                }
-            }
-
-            // No grocery lists found - return empty
-            (
-                StatusCode::OK,
-                Json(json!({
-                    "success": true,
-                    "lists": [],
-                    "count": 0
-                })),
-            )
-                .into_response()
-        }
-        Err(e) => {
-            eprintln!("❌ Failed to parse user data: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Failed to parse user data"})),
-            )
-                .into_response()
-        }
+    if resp.status() == StatusCode::NOT_FOUND {
+        return (
+            StatusCode::OK,
+            Json(json!({
+                "success": true,
+                "lists": [],
+                "count": 0
+            })),
+        )
+            .into_response();
     }
+
+    if !resp.status().is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        eprintln!("❌ Failed to fetch grocery lists: {}", body);
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "Failed to fetch grocery lists", "details": body})),
+        )
+            .into_response();
+    }
+
+    let data: Value = match resp.json().await {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("❌ Failed to parse grocery list response: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Failed to parse grocery lists"})),
+            )
+                .into_response();
+        }
+    };
+
+    let documents: Vec<Value> = data
+        .get("documents")
+        .and_then(|d| d.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let mut lists = Vec::new();
+    for doc in &documents {
+        let list_id = doc
+            .get("name")
+            .and_then(|n| n.as_str())
+            .map(extract_document_id)
+            .unwrap_or_default();
+
+        if list_id.is_empty() {
+            continue;
+        }
+
+        let list_name = get_doc_string_field(doc, "list_name")
+            .unwrap_or_else(|| "Unnamed List".to_string());
+
+        let items = match fetch_grocery_items_for_list(&client, &firebase_config, &userid, &list_id).await {
+            Ok(items) => items,
+            Err(e) => {
+                eprintln!("❌ Failed to fetch items for list {}: {}", list_id, e);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({"error": "Failed to fetch grocery items", "details": e})),
+                )
+                    .into_response();
+            }
+        };
+
+        lists.push(GroceryList {
+            list_id,
+            list_name,
+            items,
+        });
+    }
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "success": true,
+            "lists": lists,
+            "count": lists.len()
+        })),
+    )
+        .into_response()
 }
 
 /// Get a single grocery list
@@ -134,84 +228,78 @@ pub async fn get_grocery_list(
 ) -> impl IntoResponse {
     println!("get_grocery_list: user={}, list_id={}", userid, list_id);
 
-    let url = format!("{}/users/{}", firebase_config.firestore_url(), userid);
-    let resp = match reqwest::get(&url).await {
+    let client = Client::new();
+    let list_url = format!(
+        "{}/users/{}/grocery/{}",
+        firebase_config.firestore_url(),
+        userid,
+        list_id
+    );
+
+    let list_resp = match client.get(&list_url).send().await {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("❌ Failed to fetch user: {}", e);
+            eprintln!("❌ Failed to fetch grocery list: {}", e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Failed to fetch user"})),
+                Json(json!({"error": "Failed to fetch grocery list"})),
             )
                 .into_response();
         }
     };
 
-    let text = match resp.text().await {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("❌ Failed to read response: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Failed to read response"})),
-            )
-                .into_response();
-        }
-    };
-
-    match serde_json::from_str::<serde_json::Value>(&text) {
-        Ok(user_data) => {
-            if let Some(fields) = user_data.get("fields") {
-                if let Some(grocery_field) = fields.get("grocery") {
-                    if let Some(map_value) = grocery_field.get("mapValue") {
-                        if let Some(grocery_fields) = map_value.get("fields") {
-                            if let Some(list_data) = grocery_fields.get(&list_id) {
-                                if let Some(list_map_value) =
-                                    list_data.get("mapValue").and_then(|m| m.get("fields"))
-                                {
-                                    let list_name = list_map_value
-                                        .get("list_name")
-                                        .and_then(|n| n.get("stringValue"))
-                                        .and_then(|s| s.as_str())
-                                        .unwrap_or("Unnamed List")
-                                        .to_string();
-
-                                    let items = parse_grocery_items(list_map_value);
-
-                                    return (
-                                        StatusCode::OK,
-                                        Json(json!({
-                                            "success": true,
-                                            "list": {
-                                                "list_id": list_id,
-                                                "list_name": list_name,
-                                                "items": items,
-                                            }
-                                        })),
-                                    )
-                                        .into_response();
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            (
-                StatusCode::NOT_FOUND,
-                Json(json!({"error": "Grocery list not found"})),
-            )
-                .into_response()
-        }
-        Err(e) => {
-            eprintln!("❌ Failed to parse user data: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Failed to parse user data"})),
-            )
-                .into_response()
-        }
+    if list_resp.status() == StatusCode::NOT_FOUND {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "Grocery list not found"})),
+        )
+            .into_response();
     }
+
+    if !list_resp.status().is_success() {
+        let body = list_resp.text().await.unwrap_or_default();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "Failed to fetch grocery list", "details": body})),
+        )
+            .into_response();
+    }
+
+    let list_doc: Value = match list_resp.json().await {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("❌ Failed to parse grocery list: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Failed to parse grocery list"})),
+            )
+                .into_response();
+        }
+    };
+
+    let items = match fetch_grocery_items_for_list(&client, &firebase_config, &userid, &list_id).await {
+        Ok(items) => items,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": "Failed to fetch grocery items", "details": e})),
+            )
+                .into_response();
+        }
+    };
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "success": true,
+            "list": {
+                "list_id": list_id,
+                "list_name": get_doc_string_field(&list_doc, "list_name").unwrap_or_else(|| "Unnamed List".to_string()),
+                "items": items,
+            }
+        })),
+    )
+        .into_response()
 }
 
 // ===== CREATE Endpoints =====
@@ -227,8 +315,8 @@ pub async fn create_grocery_list(
     let client = Client::new();
     let list_id = format!("grocery_{}", generate_unique_id());
 
-    let patch_url = format!(
-        "{}/users/{}?updateMask.fieldPaths=grocery.{}",
+    let post_url = format!(
+        "{}/users/{}/grocery?documentId={}",
         firebase_config.firestore_url(),
         userid,
         list_id
@@ -236,28 +324,11 @@ pub async fn create_grocery_list(
 
     let firestore_payload = json!({
         "fields": {
-            "grocery": {
-                "mapValue": {
-                    "fields": {
-                        list_id.clone(): {
-                            "mapValue": {
-                                "fields": {
-                                    "list_name": { "stringValue": request.list_name },
-                                    "items": {
-                                        "mapValue": {
-                                            "fields": {}
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            "list_name": { "stringValue": request.list_name }
         }
     });
 
-    let patch_response = match client.patch(&patch_url).json(&firestore_payload).send().await {
+    let patch_response = match client.post(&post_url).json(&firestore_payload).send().await {
         Ok(response) => response,
         Err(e) => {
             eprintln!("❌ Failed to patch grocery list: {}", e);
@@ -308,8 +379,8 @@ pub async fn add_grocery_item(
     let client = Client::new();
     let item_id = format!("item_{}", generate_unique_id());
 
-    let patch_url = format!(
-        "{}/users/{}?updateMask.fieldPaths=grocery.{}.items.{}",
+    let post_url = format!(
+        "{}/users/{}/grocery/{}/items?documentId={}",
         firebase_config.firestore_url(),
         userid,
         list_id,
@@ -318,39 +389,15 @@ pub async fn add_grocery_item(
 
     let firestore_payload = json!({
         "fields": {
-            "grocery": {
-                "mapValue": {
-                    "fields": {
-                        list_id.clone(): {
-                            "mapValue": {
-                                "fields": {
-                                    "items": {
-                                        "mapValue": {
-                                            "fields": {
-                                                item_id.clone(): {
-                                                    "mapValue": {
-                                                        "fields": {
-                                                            "uid": { "stringValue": item_id.clone() },
-                                                            "name": { "stringValue": request.name },
-                                                            "quantity": { "stringValue": request.quantity },
-                                                            "unit": { "stringValue": request.unit },
-                                                            "checked": { "booleanValue": false }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            "uid": { "stringValue": item_id.clone() },
+            "name": { "stringValue": request.name },
+            "quantity": { "stringValue": request.quantity },
+            "unit": { "stringValue": request.unit },
+            "checked": { "booleanValue": false }
         }
     });
 
-    let patch_response = match client.patch(&patch_url).json(&firestore_payload).send().await {
+    let patch_response = match client.post(&post_url).json(&firestore_payload).send().await {
         Ok(response) => response,
         Err(e) => {
             eprintln!("❌ Failed to patch grocery item: {}", e);
@@ -409,13 +456,18 @@ pub async fn update_grocery_item(
 
     // Build item fields based on what was provided
     if let Some(checked) = request.checked {
-        field_paths.push(format!("grocery.{}.items.{}.checked", list_id, item_id));
+        field_paths.push("checked".to_string());
         item_fields.insert("checked".to_string(), json!({"booleanValue": checked}));
     }
 
     if let Some(quantity) = &request.quantity {
-        field_paths.push(format!("grocery.{}.items.{}.quantity", list_id, item_id));
+        field_paths.push("quantity".to_string());
         item_fields.insert("quantity".to_string(), json!({"stringValue": quantity}));
+    }
+
+    if let Some(unit) = &request.unit {
+        field_paths.push("unit".to_string());
+        item_fields.insert("unit".to_string(), json!({"stringValue": unit}));
     }
 
     if field_paths.is_empty() {
@@ -427,42 +479,16 @@ pub async fn update_grocery_item(
     }
 
     let patch_url = format!(
-        "{}/users/{}?updateMask.fieldPaths={}",
+        "{}/users/{}/grocery/{}/items/{}?updateMask.fieldPaths={}",
         firebase_config.firestore_url(),
         userid,
+        list_id,
+        item_id,
         field_paths.join("&updateMask.fieldPaths=")
     );
 
-    // Build nested structure EXACTLY like add_grocery_item does
-    // item_fields has the leaf values (checked, quantity, etc)
-    
-    // Wrap item in its map value
-    let mut item_entry = serde_json::Map::new();
-    item_entry.insert(item_id.clone(), json!({"mapValue": {"fields": item_fields}}));
-    
-    // items field contains the item_entry
-    let items_value = json!({
-        "mapValue": {
-            "fields": serde_json::Value::Object(item_entry)
-        }
-    });
-    
-    // Now build list level
-    let mut list_fields = serde_json::Map::new();
-    list_fields.insert("items".to_string(), items_value);
-    
-    // List ID is the key
-    let mut list_entry = serde_json::Map::new();
-    list_entry.insert(list_id.clone(), json!({"mapValue": {"fields": list_fields}}));
-
     let firestore_payload = json!({
-        "fields": {
-            "grocery": {
-                "mapValue": {
-                    "fields": serde_json::Value::Object(list_entry)
-                }
-            }
-        }
+        "fields": serde_json::Value::Object(item_fields)
     });
 
     eprintln!("📤 UPDATE payload: {}", firestore_payload);
@@ -511,27 +537,14 @@ pub async fn delete_grocery_list(
     println!("delete_grocery_list: user={}, list_id={}", userid, list_id);
 
     let client = Client::new();
-    let patch_url = format!(
-        "{}/users/{}?updateMask.fieldPaths=grocery.{}",
+    let delete_url = format!(
+        "{}/users/{}/grocery/{}",
         firebase_config.firestore_url(),
         userid,
         list_id
     );
 
-    // Send empty mapValue to delete the list
-    let firestore_payload = json!({
-        "fields": {
-            "grocery": {
-                "mapValue": {
-                    "fields": {}
-                }
-            }
-        }
-    });
-
-    eprintln!("📤 DELETE LIST payload: {}", firestore_payload);
-
-    let patch_response = match client.patch(&patch_url).json(&firestore_payload).send().await {
+    let patch_response = match client.delete(&delete_url).send().await {
         Ok(response) => response,
         Err(e) => {
             eprintln!("❌ Failed to delete list: {}", e);
@@ -575,105 +588,15 @@ pub async fn delete_grocery_item(
 
     let client = Client::new();
 
-    // FIRST: Verify item exists by fetching the list
-    let get_url = format!("{}/users/{}", firebase_config.firestore_url(), userid);
-    let resp = match reqwest::get(&get_url).await {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("❌ Failed to verify item: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Failed to verify item"})),
-            )
-                .into_response();
-        }
-    };
-
-    let text = match resp.text().await {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("❌ Failed to read response: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Failed to verify item"})),
-            )
-                .into_response();
-        }
-    };
-
-    // Check if item exists
-    match serde_json::from_str::<serde_json::Value>(&text) {
-        Ok(user_data) => {
-            let item_exists = user_data
-                .get("fields")
-                .and_then(|f| f.get("grocery"))
-                .and_then(|g| g.get("mapValue"))
-                .and_then(|m| m.get("fields"))
-                .and_then(|f| f.get(&list_id))
-                .and_then(|l| l.get("mapValue"))
-                .and_then(|m| m.get("fields"))
-                .and_then(|f| f.get("items"))
-                .and_then(|i| i.get("mapValue"))
-                .and_then(|m| m.get("fields"))
-                .and_then(|f| f.get(&item_id))
-                .is_some();
-
-            if !item_exists {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(json!({"error": "Item not found", "success": false})),
-                )
-                    .into_response();
-            }
-        }
-        Err(e) => {
-            eprintln!("❌ Failed to parse user data: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Failed to verify item"})),
-            )
-                .into_response();
-        }
-    }
-
-    // SECOND: Item exists - proceed with deletion
-    let patch_url = format!(
-        "{}/users/{}?updateMask.fieldPaths=grocery.{}.items.{}",
+    let delete_url = format!(
+        "{}/users/{}/grocery/{}/items/{}",
         firebase_config.firestore_url(),
         userid,
         list_id,
         item_id
     );
 
-    // Send empty mapValue to delete the item
-    let mut item_entry = serde_json::Map::new();
-    // Empty map deletes the item
-
-    let mut items_map = serde_json::Map::new();
-    items_map.insert(
-        "items".to_string(),
-        json!({"mapValue": {"fields": item_entry}}),
-    );
-
-    let mut list_entry = serde_json::Map::new();
-    list_entry.insert(
-        list_id.clone(),
-        json!({"mapValue": {"fields": items_map}}),
-    );
-
-    let firestore_payload = json!({
-        "fields": {
-            "grocery": {
-                "mapValue": {
-                    "fields": list_entry
-                }
-            }
-        }
-    });
-
-    eprintln!("📤 DELETE ITEM payload: {}", firestore_payload);
-
-    let patch_response = match client.patch(&patch_url).json(&firestore_payload).send().await {
+    let patch_response = match client.delete(&delete_url).send().await {
         Ok(response) => response,
         Err(e) => {
             eprintln!("❌ Failed to delete item: {}", e);
@@ -684,6 +607,14 @@ pub async fn delete_grocery_item(
                 .into_response();
         }
     };
+
+    if patch_response.status() == StatusCode::NOT_FOUND {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "Item not found", "success": false})),
+        )
+            .into_response();
+    }
 
     if !patch_response.status().is_success() {
         let body = patch_response.text().await.unwrap_or_default();
@@ -722,9 +653,15 @@ pub async fn convert_grocery_to_schedule(
 
     let client = Client::new();
 
-    // STEP 1: Fetch the grocery item details
-    let get_url = format!("{}/users/{}", firebase_config.firestore_url(), userid);
-    let resp = match reqwest::get(&get_url).await {
+    // STEP 1: Fetch the grocery item details from subcollection doc
+    let get_url = format!(
+        "{}/users/{}/grocery/{}/items/{}",
+        firebase_config.firestore_url(),
+        userid,
+        list_id,
+        item_id
+    );
+    let resp = match client.get(&get_url).send().await {
         Ok(r) => r,
         Err(e) => {
             eprintln!("❌ Failed to fetch user: {}", e);
@@ -736,23 +673,27 @@ pub async fn convert_grocery_to_schedule(
         }
     };
 
-    let text = match resp.text().await {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("❌ Failed to read response: {}", e);
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Failed to fetch grocery item"})),
-            )
-                .into_response();
-        }
-    };
+    if resp.status() == StatusCode::NOT_FOUND {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "Grocery item not found"})),
+        )
+            .into_response();
+    }
 
-    // Parse and extract grocery item
-    let user_data = match serde_json::from_str::<serde_json::Value>(&text) {
+    if !resp.status().is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "Failed to fetch grocery item", "details": body})),
+        )
+            .into_response();
+    }
+
+    let item_doc: Value = match resp.json().await {
         Ok(data) => data,
         Err(e) => {
-            eprintln!("❌ Failed to parse user data: {}", e);
+            eprintln!("❌ Failed to parse grocery item: {}", e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({"error": "Failed to parse grocery item"})),
@@ -761,55 +702,22 @@ pub async fn convert_grocery_to_schedule(
         }
     };
 
-    let item_data = user_data
-        .get("fields")
-        .and_then(|f| f.get("grocery"))
-        .and_then(|g| g.get("mapValue"))
-        .and_then(|m| m.get("fields"))
-        .and_then(|f| f.get(&list_id))
-        .and_then(|l| l.get("mapValue"))
-        .and_then(|m| m.get("fields"))
-        .and_then(|f| f.get("items"))
-        .and_then(|i| i.get("mapValue"))
-        .and_then(|m| m.get("fields"))
-        .and_then(|f| f.get(&item_id))
-        .and_then(|i| i.get("mapValue"))
-        .and_then(|m| m.get("fields"));
-
-    if item_data.is_none() {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({"error": "Grocery item not found"})),
-        )
-            .into_response();
-    }
-
-    let item_map = item_data.unwrap();
-    let item_name = item_map
-        .get("name")
-        .and_then(|n| n.get("stringValue"))
-        .and_then(|s| s.as_str())
-        .unwrap_or("Unknown")
+    let item_name = get_doc_string_field(&item_doc, "name")
+        .unwrap_or("Unknown".to_string())
         .to_string();
 
-    let item_quantity = item_map
-        .get("quantity")
-        .and_then(|q| q.get("stringValue"))
-        .and_then(|s| s.as_str())
-        .unwrap_or("1")
+    let item_quantity = get_doc_string_field(&item_doc, "quantity")
+        .unwrap_or("1".to_string())
         .to_string();
 
-    let item_unit = item_map
-        .get("unit")
-        .and_then(|u| u.get("stringValue"))
-        .and_then(|s| s.as_str())
-        .unwrap_or("")
+    let item_unit = get_doc_string_field(&item_doc, "unit")
+        .unwrap_or("".to_string())
         .to_string();
 
-    // STEP 2: Create a schedule with the grocery item details
+    // STEP 2: Create a schedule document in subcollection
     let schedule_id = format!("schedule_{}", generate_unique_id());
-    let schedule_patch_url = format!(
-        "{}/users/{}?updateMask.fieldPaths=schedules.{}",
+    let schedule_post_url = format!(
+        "{}/users/{}/schedules?documentId={}",
         firebase_config.firestore_url(),
         userid,
         schedule_id
@@ -823,31 +731,20 @@ pub async fn convert_grocery_to_schedule(
 
     let schedule_payload = json!({
         "fields": {
-            "schedules": {
-                "mapValue": {
-                    "fields": {
-                        schedule_id.clone(): {
-                            "mapValue": {
-                                "fields": {
-                                    "uid": { "stringValue": schedule_id.clone() },
-                                    "name": { "stringValue": item_name },
-                                    "quantity": { "stringValue": quantity_str },
-                                    "date": { "stringValue": request.date },
-                                    "time": { "stringValue": request.time },
-                                    "expiry": { "stringValue": request.expiry },
-                                    "category": { "stringValue": request.category.clone().unwrap_or_else(|| "grocery".to_string()) },
-                                    "notify": { "booleanValue": false }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            "uid": { "stringValue": schedule_id.clone() },
+            "name": { "stringValue": item_name },
+            "quantity": { "stringValue": quantity_str },
+            "date": { "stringValue": request.date },
+            "time": { "stringValue": request.time },
+            "expiry": { "stringValue": request.expiry },
+            "category": { "stringValue": request.category.clone().unwrap_or_else(|| "grocery".to_string()) },
+            "location": { "stringValue": request.location.clone().unwrap_or_default() },
+            "notify": { "booleanValue": false }
         }
     });
 
     let schedule_response = match client
-        .patch(&schedule_patch_url)
+        .post(&schedule_post_url)
         .json(&schedule_payload)
         .send()
         .await
@@ -874,46 +771,18 @@ pub async fn convert_grocery_to_schedule(
             .into_response();
     }
 
-    // STEP 3: Mark grocery item as checked
+    // STEP 3: Mark grocery item as checked via item doc patch
     let grocery_patch_url = format!(
-        "{}/users/{}?updateMask.fieldPaths=grocery.{}.items.{}.checked",
+        "{}/users/{}/grocery/{}/items/{}?updateMask.fieldPaths=checked",
         firebase_config.firestore_url(),
         userid,
         list_id,
         item_id
     );
 
-    let mut item_fields = serde_json::Map::new();
-    item_fields.insert("checked".to_string(), json!({"booleanValue": true}));
-
-    let mut item_entry = serde_json::Map::new();
-    item_entry.insert(
-        item_id.clone(),
-        json!({"mapValue": {"fields": item_fields}}),
-    );
-
-    let items_value = json!({
-        "mapValue": {
-            "fields": serde_json::Value::Object(item_entry)
-        }
-    });
-
-    let mut list_fields = serde_json::Map::new();
-    list_fields.insert("items".to_string(), items_value);
-
-    let mut list_entry = serde_json::Map::new();
-    list_entry.insert(
-        list_id.clone(),
-        json!({"mapValue": {"fields": list_fields}}),
-    );
-
     let grocery_payload = json!({
         "fields": {
-            "grocery": {
-                "mapValue": {
-                    "fields": serde_json::Value::Object(list_entry)
-                }
-            }
+            "checked": { "booleanValue": true }
         }
     });
 
@@ -967,7 +836,8 @@ pub async fn convert_grocery_to_schedule(
                 "date": request.date,
                 "time": request.time,
                 "expiry": request.expiry,
-                "category": request.category.unwrap_or_else(|| "grocery".to_string())
+                "category": request.category.unwrap_or_else(|| "grocery".to_string()),
+                "location": request.location.unwrap_or_default()
             },
             "grocery_item": {
                 "item_id": item_id,
@@ -976,59 +846,4 @@ pub async fn convert_grocery_to_schedule(
         })),
     )
         .into_response()
-}
-
-/// Parse grocery items from Firestore data
-fn parse_grocery_items(list_data: &serde_json::Value) -> Vec<GroceryItem> {
-    let mut items = Vec::new();
-
-    if let Some(items_field) = list_data.get("items") {
-        if let Some(map_value) = items_field.get("mapValue") {
-            if let Some(item_fields) = map_value.get("fields") {
-                if let Some(obj) = item_fields.as_object() {
-                    for (item_id, item_data) in obj.iter() {
-                        if let Some(item_map) = item_data.get("mapValue").and_then(|m| m.get("fields"))
-                        {
-                            let name = item_map
-                                .get("name")
-                                .and_then(|n| n.get("stringValue"))
-                                .and_then(|s| s.as_str())
-                                .unwrap_or("")
-                                .to_string();
-
-                            let quantity = item_map
-                                .get("quantity")
-                                .and_then(|q| q.get("stringValue"))
-                                .and_then(|s| s.as_str())
-                                .unwrap_or("")
-                                .to_string();
-
-                            let unit = item_map
-                                .get("unit")
-                                .and_then(|u| u.get("stringValue"))
-                                .and_then(|s| s.as_str())
-                                .unwrap_or("")
-                                .to_string();
-
-                            let checked = item_map
-                                .get("checked")
-                                .and_then(|c| c.get("booleanValue"))
-                                .and_then(|b| b.as_bool())
-                                .unwrap_or(false);
-
-                            items.push(GroceryItem {
-                                uid: item_id.clone(),
-                                name,
-                                quantity,
-                                unit,
-                                checked,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    items
 }

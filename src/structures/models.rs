@@ -6,6 +6,10 @@ pub struct ChatRequest {
     pub prompt: serde_json::Value,
     #[serde(rename = "promptlanguage")]
     pub prompt_language: String,
+    #[serde(default)]
+    pub userid: Option<String>,
+    #[serde(default)]
+    pub selected_people_ids: Option<Vec<String>>,
 }
 
 

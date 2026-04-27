@@ -82,6 +82,8 @@ pub struct FirestoreScheduleDetail {
     pub category: Option<FirestoreStringField>,
     #[serde(default)]
     pub quantity: Option<FirestoreStringField>,
+    #[serde(default)]
+    pub location: Option<FirestoreStringField>,
 }
 
 #[derive(Serialize, Debug, Clone)]
@@ -94,6 +96,7 @@ pub struct Schedule {
     pub notify: bool,
     pub category: Option<String>,
     pub quantity: Option<String>,
+    pub location: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -230,6 +233,7 @@ pub struct FirestoreChangeSchedule {
     pub notify: Option<bool>,
     pub category: Option<String>,
     pub quantity: Option<String>,
+    pub location: Option<String>,
 }
 #[derive(serde::Deserialize)]
 pub struct AddScheduleRequest {
@@ -240,6 +244,7 @@ pub struct AddScheduleRequest {
     pub notify: bool,
     pub category: Option<String>,
     pub quantity: String,
+    pub location: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -258,6 +263,7 @@ pub struct GroceryToScheduleRequest {
     pub time: String,       // HH-MM
     pub category: Option<String>,
     pub expiry: String,     // YYYY-MM-DD
+    pub location: Option<String>,
 }
 
 // ===== GROCERY SYSTEM STRUCTURES =====
@@ -375,4 +381,30 @@ pub struct UpdateGroceryItemRequest {
     pub checked: Option<bool>,
     pub quantity: Option<String>,
     pub unit: Option<String>,
+}
+
+// ===== PEOPLE PREFERENCES STRUCTURES =====
+
+#[derive(Serialize, Debug, Clone)]
+pub struct PersonProfile {
+    pub person_id: String,
+    pub name: String,
+    pub preference: Vec<String>,
+    pub allergy: Vec<String>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct CreatePersonRequest {
+    pub name: String,
+    #[serde(default)]
+    pub preference: Vec<String>,
+    #[serde(default)]
+    pub allergy: Vec<String>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+pub struct UpdatePersonRequest {
+    pub name: Option<String>,
+    pub preference: Option<Vec<String>>,
+    pub allergy: Option<Vec<String>>,
 }

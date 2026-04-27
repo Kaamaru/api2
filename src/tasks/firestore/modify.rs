@@ -55,6 +55,7 @@ struct MealData {
     date: Option<StringValue>,
     time: Option<StringValue>,
     category: Option<StringValue>,
+    location: Option<StringValue>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -87,15 +88,14 @@ pub async fn firestore_add_schedule(
     let client = Client::new();
 
     let new_id = format!("schedule_{}", generate_unique_id());
-    // PATCH URL with updateMask to add schedules.itemX
-    let patch_url = format!(
-        "{}/users/{}?updateMask.fieldPaths=schedules.{}",
+    let post_url = format!(
+        "{}/users/{}/schedules?documentId={}",
         firebase_config.firestore_url(),
         uuid,
         new_id
     );
-    println!("PATCH URL: {}", patch_url);
-    // Build schedule fields with optional category and quantity
+    println!("POST URL: {}", post_url);
+
     let mut schedule_fields = json!({
         "uid": { "stringValue": new_id.clone() },
         "name": { "stringValue": request.name },
@@ -114,25 +114,19 @@ pub async fn firestore_add_schedule(
             .insert("category".to_string(), json!({"stringValue": category}));
     }
 
-    // Firestore payload to insert new item into 'schedules'
+    if let Some(location) = &request.location {
+        schedule_fields
+            .as_object_mut()
+            .unwrap()
+            .insert("location".to_string(), json!({"stringValue": location}));
+    }
+
     let firestore_payload = json!({
-        "fields": {
-            "schedules": {
-                "mapValue": {
-                    "fields": {
-                        new_id.clone(): {
-                            "mapValue": {
-                                "fields": schedule_fields
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        "fields": schedule_fields
     });
 
     let patch_response = match client
-        .patch(&patch_url)
+        .post(&post_url)
         .json(&firestore_payload)
         .send()
         .await
@@ -164,6 +158,7 @@ pub async fn firestore_add_schedule(
             "expiry": request.expiry,
             "quantity": request.quantity,
             "category": request.category,
+            "location": request.location,
             "notify": request.notify,
         },
         "updated_at": chrono::Utc::now().to_rfc3339()
@@ -179,9 +174,8 @@ pub async fn firestore_add_recipe(
     let client = Client::new();
     let new_id = format!("recipe_{}", generate_unique_id());
 
-    // PATCH URL with updateMask to add savedrecipes.recipe_name
-    let patch_url = format!(
-        "{}/users/{}?updateMask.fieldPaths=savedrecipes.{}",
+    let post_url = format!(
+        "{}/users/{}/savedrecipes?documentId={}",
         firebase_config.firestore_url(),
         uuid,
         new_id
@@ -240,25 +234,12 @@ pub async fn firestore_add_recipe(
             .insert("quantity".to_string(), json!({"stringValue": quantity}));
     }
 
-    // Final Firestore document structure - FIXED
     let firestore_payload = json!({
-        "fields": {
-            "savedrecipes": {
-                "mapValue": {
-                    "fields": {
-                        new_id.clone(): {
-                            "mapValue": {
-                                "fields": recipe_fields
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        "fields": recipe_fields
     });
 
     let patch_response = match client
-        .patch(&patch_url)
+        .post(&post_url)
         .json(&firestore_payload)
         .send()
         .await
@@ -298,118 +279,90 @@ pub async fn firestore_change_schedule(
     State(firebase_config): State<FirebaseConfig>,
     Json(payload): Json<PatchScheduleRequest>,
 ) -> impl IntoResponse {
-    // Update the user document, not a subcollection
-    let url = format!("{}/users/{}", firebase_config.firestore_url(), uuid);
     let client = Client::new();
 
-    // Build the schedule fields dynamically, only including provided fields
-    let mut processed_schedules = std::collections::HashMap::new();
+    let mut updated_count = 0usize;
 
     for (meal_key, meal_value) in payload.fields.schedules.map_value.fields {
-        let mut meal_fields = std::collections::HashMap::new();
+        let mut meal_fields: serde_json::Map<String, Value> = serde_json::Map::new();
+        let mut update_paths: Vec<String> = Vec::new();
 
-        // Only add fields that are present in the request
         if let Some(name) = meal_value.map_value.fields.name {
-            meal_fields.insert(
-                "name".to_string(),
-                json!({"stringValue": name.string_value}),
-            );
+            update_paths.push("name".to_string());
+            meal_fields.insert("name".to_string(), json!({"stringValue": name.string_value}));
         }
         if let Some(expiry) = meal_value.map_value.fields.expiry {
+            update_paths.push("expiry".to_string());
             meal_fields.insert(
                 "expiry".to_string(),
                 json!({"stringValue": expiry.string_value}),
             );
         }
         if let Some(date) = meal_value.map_value.fields.date {
-            meal_fields.insert(
-                "date".to_string(),
-                json!({"stringValue": date.string_value}),
-            );
+            update_paths.push("date".to_string());
+            meal_fields.insert("date".to_string(), json!({"stringValue": date.string_value}));
         }
         if let Some(time) = meal_value.map_value.fields.time {
-            meal_fields.insert(
-                "time".to_string(),
-                json!({"stringValue": time.string_value}),
-            );
+            update_paths.push("time".to_string());
+            meal_fields.insert("time".to_string(), json!({"stringValue": time.string_value}));
         }
 
         if let Some(category) = meal_value.map_value.fields.category {
+            update_paths.push("category".to_string());
             meal_fields.insert(
                 "category".to_string(),
                 json!({"stringValue": category.string_value}),
             );
         }
 
-        processed_schedules.insert(
+        if let Some(location) = meal_value.map_value.fields.location {
+            update_paths.push("location".to_string());
+            meal_fields.insert(
+                "location".to_string(),
+                json!({"stringValue": location.string_value}),
+            );
+        }
+
+        if update_paths.is_empty() {
+            continue;
+        }
+
+        let patch_url = format!(
+            "{}/users/{}/schedules/{}?updateMask.fieldPaths={}",
+            firebase_config.firestore_url(),
+            uuid,
             meal_key,
-            json!({
-                "mapValue": {
-                    "fields": meal_fields
-                }
-            }),
+            update_paths.join("&updateMask.fieldPaths=")
         );
-    }
 
-    // Create the update payload with only provided fields
-    let firestore_payload = json!({
-        "fields": {
-            "schedules": {
-                "mapValue": {
-                    "fields": processed_schedules
-                }
+        let firestore_payload = json!({
+            "fields": Value::Object(meal_fields)
+        });
+
+        let response = match client.patch(&patch_url).json(&firestore_payload).send().await {
+            Ok(response) => response,
+            Err(e) => {
+                eprintln!("Failed to update schedule {}: {}", meal_key, e);
+                return Json(json!({ "error": "Failed to update schedule" })).into_response();
             }
+        };
+
+        if !response.status().is_success() {
+            let error_body = response.text().await.unwrap_or_default();
+            eprintln!("Error updating schedule {}: {}", meal_key, error_body);
+            return Json(json!({ "error": "Failed to update schedule", "details": error_body }))
+                .into_response();
         }
-    });
 
-    // Add updateMask to only update the schedules field
-    let url_with_mask = format!("{}?updateMask.fieldPaths=schedules", url);
-
-    let response = match client
-        .patch(&url_with_mask)
-        .json(&firestore_payload)
-        .send()
-        .await
-    {
-        Ok(response) => response,
-        Err(e) => {
-            eprintln!("Failed to update schedule: {}", e);
-            return Json(json!({ "error": "Failed to update schedule" })).into_response();
-        }
-    };
-
-    if !response.status().is_success() {
-        eprintln!("⚠️ Firestore responded with status: {}", response.status());
-        let error_body = response.text().await.unwrap_or_default();
-        eprintln!("Error body: {}", error_body);
-        return Json(json!({ "error": "Failed to update schedule" })).into_response();
+        updated_count += 1;
     }
-
-    let body = match response.text().await {
-        Ok(body) => {
-            println!("✅ Schedule updated successfully: {}", body);
-            body
-        }
-        Err(e) => {
-            eprintln!("Failed to get response body: {}", e);
-            return Json(json!({ "error": "Failed to update schedule" })).into_response();
-        }
-    };
-
-    // Parse the response to extract useful info
-    let firestore_response: Value = match serde_json::from_str(&body) {
-        Ok(data) => data,
-        Err(e) => {
-            eprintln!("❌ Failed to parse Firestore response: {}", e);
-            return Json(json!({ "error": "Failed to parse response" })).into_response();
-        }
-    };
 
     // Return success response
     Json(json!({
         "success": true,
         "message": "Schedule updated successfully",
         "uuid": uuid,
+        "updated_count": updated_count,
         "updated_at": chrono::Utc::now().to_rfc3339()
     }))
     .into_response()
@@ -419,79 +372,25 @@ pub async fn firestore_delete_schedule(
     Path((uuid, schedule_key)): Path<(String, String)>,
     State(firebase_config): State<FirebaseConfig>,
 ) -> impl IntoResponse {
-    // First, get the current user document to retrieve existing schedules
-    let get_url = format!("{}/users/{}", firebase_config.firestore_url(), uuid);
+    let delete_url = format!(
+        "{}/users/{}/schedules/{}",
+        firebase_config.firestore_url(),
+        uuid,
+        schedule_key
+    );
     let client = Client::new();
 
-    // Get current document
-    let get_response = match client.get(&get_url).send().await {
-        Ok(response) => response,
-        Err(e) => {
-            eprintln!("Failed to fetch user document: {}", e);
-            return Json(json!({ "error": "Failed to fetch user document" })).into_response();
-        }
-    };
-
-    if !get_response.status().is_success() {
-        eprintln!(
-            "⚠️ Failed to fetch user document with status: {}",
-            get_response.status()
-        );
-        return Json(json!({ "error": "User document not found" })).into_response();
-    }
-
-    let body = match get_response.text().await {
-        Ok(body) => body,
-        Err(e) => {
-            eprintln!("Failed to get response body: {}", e);
-            return Json(json!({ "error": "Failed to read user document" })).into_response();
-        }
-    };
-
-    let mut user_doc: Value = match serde_json::from_str(&body) {
-        Ok(data) => data,
-        Err(e) => {
-            eprintln!("❌ Failed to parse user document: {}", e);
-            return Json(json!({ "error": "Failed to parse user document" })).into_response();
-        }
-    };
-
-    // Check if schedules exist and remove the specified schedule
-    if let Some(schedules) = user_doc
-        .get_mut("fields")
-        .and_then(|f| f.get_mut("schedules"))
-        .and_then(|s| s.get_mut("mapValue"))
-        .and_then(|mv| mv.get_mut("fields"))
-        .and_then(|f| f.as_object_mut())
-    {
-        if schedules.remove(&schedule_key).is_none() {
-            return Json(json!({ "error": "Schedule not found" })).into_response();
-        }
-    } else {
-        return Json(json!({ "error": "No schedules found" })).into_response();
-    }
-
-    // Update the document with the modified schedules
-    let update_url = format!("{}?updateMask.fieldPaths=schedules", get_url);
-
-    let firestore_payload = json!({
-        "fields": {
-            "schedules": user_doc["fields"]["schedules"]
-        }
-    });
-
-    let update_response = match client
-        .patch(&update_url)
-        .json(&firestore_payload)
-        .send()
-        .await
-    {
+    let update_response = match client.delete(&delete_url).send().await {
         Ok(response) => response,
         Err(e) => {
             eprintln!("Failed to update schedule: {}", e);
             return Json(json!({ "error": "Failed to delete schedule" })).into_response();
         }
     };
+
+    if update_response.status() == StatusCode::NOT_FOUND {
+        return Json(json!({ "error": "Schedule not found" })).into_response();
+    }
 
     if !update_response.status().is_success() {
         eprintln!(
@@ -532,79 +431,25 @@ pub async fn firestore_delete_recipe(
     Path((uuid, recipe_key)): Path<(String, String)>,
     State(firebase_config): State<FirebaseConfig>,
 ) -> impl IntoResponse {
-    // First, get the current user document to retrieve existing recipes
-    let get_url = format!("{}/users/{}", firebase_config.firestore_url(), uuid);
+    let delete_url = format!(
+        "{}/users/{}/savedrecipes/{}",
+        firebase_config.firestore_url(),
+        uuid,
+        recipe_key
+    );
     let client = Client::new();
 
-    // Get current document
-    let get_response = match client.get(&get_url).send().await {
-        Ok(response) => response,
-        Err(e) => {
-            eprintln!("Failed to fetch user document: {}", e);
-            return Json(json!({ "error": "Failed to fetch user document" })).into_response();
-        }
-    };
-
-    if !get_response.status().is_success() {
-        eprintln!(
-            "⚠️ Failed to fetch user document with status: {}",
-            get_response.status()
-        );
-        return Json(json!({ "error": "User document not found" })).into_response();
-    }
-
-    let body = match get_response.text().await {
-        Ok(body) => body,
-        Err(e) => {
-            eprintln!("Failed to get response body: {}", e);
-            return Json(json!({ "error": "Failed to read user document" })).into_response();
-        }
-    };
-
-    let mut user_doc: Value = match serde_json::from_str(&body) {
-        Ok(data) => data,
-        Err(e) => {
-            eprintln!("❌ Failed to parse user document: {}", e);
-            return Json(json!({ "error": "Failed to parse user document" })).into_response();
-        }
-    };
-
-    // Check if savedrecipes exist and remove the specified recipe
-    if let Some(recipes) = user_doc
-        .get_mut("fields")
-        .and_then(|f| f.get_mut("savedrecipes"))
-        .and_then(|s| s.get_mut("mapValue"))
-        .and_then(|mv| mv.get_mut("fields"))
-        .and_then(|f| f.as_object_mut())
-    {
-        if recipes.remove(&recipe_key).is_none() {
-            return Json(json!({ "error": "Recipe not found" })).into_response();
-        }
-    } else {
-        return Json(json!({ "error": "No saved recipes found" })).into_response();
-    }
-
-    // Update the document with the modified recipes
-    let update_url = format!("{}?updateMask.fieldPaths=savedrecipes", get_url);
-
-    let firestore_payload = json!({
-        "fields": {
-            "savedrecipes": user_doc["fields"]["savedrecipes"]
-        }
-    });
-
-    let update_response = match client
-        .patch(&update_url)
-        .json(&firestore_payload)
-        .send()
-        .await
-    {
+    let update_response = match client.delete(&delete_url).send().await {
         Ok(response) => response,
         Err(e) => {
             eprintln!("Failed to update recipes: {}", e);
             return Json(json!({ "error": "Failed to delete recipe" })).into_response();
         }
     };
+
+    if update_response.status() == StatusCode::NOT_FOUND {
+        return Json(json!({ "error": "Recipe not found" })).into_response();
+    }
 
     if !update_response.status().is_success() {
         eprintln!(

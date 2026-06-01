@@ -89,8 +89,8 @@ async fn add_schedule_from_classification(
     let expiry_date = now + Duration::days(1);
     let expiry = expiry_date.format("%Y-%m-%d").to_string();
 
-    let patch_url = format!(
-        "{}/users/{}?updateMask.fieldPaths=schedules.{}",
+    let post_url = format!(
+        "{}/users/{}/schedules?documentId={}",
         firebase_config.firestore_url(),
         userid,
         new_id
@@ -99,40 +99,28 @@ async fn add_schedule_from_classification(
     // Build schedule payload
     let firestore_payload = json!({
         "fields": {
-            "schedules": {
-                "mapValue": {
-                    "fields": {
-                        new_id.clone(): {
-                            "mapValue": {
-                                "fields": {
-                                    "uid": { "stringValue": new_id },
-                                    "name": { "stringValue": category },
-                                    "time": { "stringValue": time },
-                                    "date": { "stringValue": date },
-                                    "expiry": { "stringValue": expiry },
-                                    "notify": { "booleanValue": false },
-                                    "category": { "stringValue": category }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            "uid": { "stringValue": new_id },
+            "name": { "stringValue": category },
+            "time": { "stringValue": time },
+            "date": { "stringValue": date },
+            "expiry": { "stringValue": expiry },
+            "notify": { "booleanValue": false },
+            "category": { "stringValue": category }
         }
     });
 
     let response = client
-        .patch(&patch_url)
+        .post(&post_url)
         .json(&firestore_payload)
         .send()
         .await
-        .map_err(|e| format!("Failed to patch schedule: {}", e))?;
+        .map_err(|e| format!("Failed to create schedule: {}", e))?;
 
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
         return Err(format!(
-            "Firestore PATCH failed: {} - {}",
+            "Firestore create failed: {} - {}",
             status, body
         ));
     }

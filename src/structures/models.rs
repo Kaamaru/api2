@@ -1,11 +1,24 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Deserialize, Serialize, Clone)]
+pub struct PeopleContextItem {
+    pub name: String,
+    pub preference: Vec<String>,
+    pub allergy: Vec<String>,
+}
+
 #[derive(Deserialize)]
 pub struct ChatRequest {
     pub history: serde_json::Value,
     pub prompt: serde_json::Value,
     #[serde(rename = "promptlanguage")]
     pub prompt_language: String,
+    #[serde(default)]
+    pub userid: Option<String>,
+    #[serde(default)]
+    pub selected_people_ids: Option<Vec<String>>,
+    #[serde(default)]
+    pub people_context: Option<Vec<PeopleContextItem>>,
 }
 
 

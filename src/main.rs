@@ -38,10 +38,15 @@ mod tools {
     pub mod keycrypt;
 }
 
+mod tests {
+    pub mod dev;
+    pub mod api_contract;
+}
+
 use crate::{
     tasks::{
         basic,
-        firestore::{firestore::*, modify::*, notify::*, grocery::*, recipe::*},
+        firestore::{firestore::*, household::*, household_extended::*, modify::*, notify::*, grocery::*, people::*, recipe::*},
         gemini::*,
         getimage::*,
         hardware::{device::*, tractor::tract_test,requests::*},
@@ -152,6 +157,24 @@ async fn main() {
         .route("/{userid}/{list_id}/items/{item_id}", patch(update_grocery_item).delete(delete_grocery_item))
         .route("/{userid}/{list_id}/items/{item_id}/to-schedule", post(convert_grocery_to_schedule));
 
+    let people = Router::new()
+        .route("/{userid}", get(get_people_profiles).post(create_person_profile))
+        .route("/{userid}/{person_id}", patch(update_person_profile).delete(delete_person_profile));
+
+    let households = Router::new()
+        .route("/", post(create_household))
+        .route("/my", get(get_my_household))
+        .route("/{household_id}/generate-invite", post(generate_household_invite))
+        .route("/redeem-invite", post(redeem_household_invite))
+        .route("/{household_id}/members/{member_uid}", delete(remove_member))
+        .route("/{household_id}/leave", post(leave_household))
+        .route("/{household_id}/schedules", get(list_household_schedules).post(add_household_schedule))
+        .route("/{household_id}/schedules/{schedule_id}", patch(update_household_schedule).delete(delete_household_schedule))
+        .route("/{household_id}/grocery", get(list_household_grocery_lists).post(create_household_grocery_list))
+        .route("/{household_id}/grocery/{list_id}", delete(delete_household_grocery_list))
+        .route("/{household_id}/grocery/{list_id}/items", post(add_household_grocery_item))
+        .route("/{household_id}/grocery/{list_id}/items/{item_id}", patch(update_household_grocery_item).delete(delete_household_grocery_item));
+
     let search = Router::new()
         .route("/recipes", get(search_recipe_handler))
         .route("/recipes/{id}", get(get_recipe_by_id_handler))
@@ -175,6 +198,8 @@ async fn main() {
         .nest("/add", add_datas)
         .nest("/notify", notify)
         .nest("/grocery", grocery)
+        .nest("/people", people)
+        .nest("/households", households)
         .nest("/hardware", hardware)
         .nest("/search", search)
         .layer(cors)

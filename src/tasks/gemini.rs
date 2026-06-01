@@ -1,7 +1,7 @@
 use crate::firebase::{FirebaseConfig, GeminiConfig};
 use crate::structures::models::{
     ChatRequest, ClassifyResponse, GeminiContent, GeminiPart, GeminiRequest, GeminiResponse,
-    GenerationConfig, InlineImageData, SystemInstruction,
+    GenerationConfig, InlineImageData, SystemInstruction, PeopleContextItem,
 };
 use crate::tasks::firestore::recipe::{insert_dishname, insert_recipe};
 use crate::tasks::getimage::get_one_image;
@@ -10,6 +10,110 @@ use image::{self, codecs::jpeg::JpegEncoder, imageops::FilterType};
 use reqwest::Client;
 use serde_json::Value;
 use serde::Deserialize;
+
+fn extract_doc_id(name: &str) -> String {
+    name.rsplit('/').next().unwrap_or_default().to_string()
+}
+
+fn get_doc_string_field(doc: &Value, key: &str) -> Option<String> {
+    doc.get("fields")
+        .and_then(|f| f.get(key))
+        .and_then(|v| v.get("stringValue"))
+        .and_then(|s| s.as_str())
+        .map(|s| s.to_string())
+}
+
+fn get_doc_string_array_field(doc: &Value, key: &str) -> Vec<String> {
+    doc.get("fields")
+        .and_then(|f| f.get(key))
+        .and_then(|v| v.get("arrayValue"))
+        .and_then(|a| a.get("values"))
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|item| {
+                    item.get("stringValue")
+                        .and_then(|s| s.as_str())
+                        .map(|s| s.to_string())
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+async fn build_people_prompt_context(
+    userid: &str,
+    selected_people_ids: &[String],
+) -> Result<String, ()> {
+    if selected_people_ids.is_empty() {
+        return Ok(String::new());
+    }
+
+    let firebase_config = FirebaseConfig::from_env();
+    let url = format!(
+        "{}/users/{}/people",
+        firebase_config.firestore_url(),
+        userid
+    );
+
+    let client = Client::new();
+    let response = client.get(&url).send().await.map_err(|_| ())?;
+    if !response.status().is_success() {
+        return Ok(String::new());
+    }
+
+    let payload: Value = response.json().await.map_err(|_| ())?;
+    let docs = payload
+        .get("documents")
+        .and_then(|d| d.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let mut selected = Vec::new();
+    for doc in docs {
+        let person_id = doc
+            .get("name")
+            .and_then(|n| n.as_str())
+            .map(extract_doc_id)
+            .unwrap_or_default();
+
+        if !selected_people_ids.iter().any(|id| id == &person_id) {
+            continue;
+        }
+
+        let name = get_doc_string_field(&doc, "name").unwrap_or_else(|| "Unknown".to_string());
+        let preference = get_doc_string_array_field(&doc, "preference");
+        let allergy = get_doc_string_array_field(&doc, "allergy");
+
+        selected.push((name, preference, allergy));
+    }
+
+    if selected.is_empty() {
+        return Ok(String::new());
+    }
+
+    let mut lines = vec![
+        "Additional user instructions based on selected people preferences:".to_string(),
+    ];
+    for (name, preference, allergy) in selected {
+        let prefs = if preference.is_empty() {
+            "none".to_string()
+        } else {
+            preference.join(", ")
+        };
+        let allergies = if allergy.is_empty() {
+            "none".to_string()
+        } else {
+            allergy.join(", ")
+        };
+        lines.push(format!(
+            "- {}: preferences [{}], allergies [{}]",
+            name, prefs, allergies
+        ));
+    }
+
+    Ok(lines.join("\n"))
+}
 
 #[derive(Deserialize)]
 pub struct ClassifyParams {
@@ -123,6 +227,50 @@ async fn try_generate_recipes(payload: &ChatRequest) -> Result<Value, StatusCode
         _ => String::new(),
     };
 
+    // Build people context either from direct people_context field or from userid/selected_people_ids
+    let people_context = if let Some(ref people_items) = payload.people_context {
+        if !people_items.is_empty() {
+            // Direct people context provided - use it
+            let mut lines = vec![
+                "Additional user instructions based on selected people preferences:".to_string(),
+            ];
+            for person in people_items {
+                let prefs = if person.preference.is_empty() {
+                    "none".to_string()
+                } else {
+                    person.preference.join(", ")
+                };
+                let allergies = if person.allergy.is_empty() {
+                    "none".to_string()
+                } else {
+                    person.allergy.join(", ")
+                };
+                lines.push(format!(
+                    "- {}: preferences [{}], allergies [{}]",
+                    person.name, prefs, allergies
+                ));
+            }
+            lines.join("\n")
+        } else {
+            String::new()
+        }
+    } else if let (Some(userid), Some(selected_people_ids)) =
+        (payload.userid.as_ref(), payload.selected_people_ids.as_ref())
+    {
+        // Fallback to fetching from userid/selected_people_ids for backward compatibility
+        build_people_prompt_context(userid, selected_people_ids)
+            .await
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+
+    let additional_people_context = if people_context.is_empty() {
+        String::new()
+    } else {
+        format!("\n{}\n", people_context)
+    };
+
     let system_prompt = format!(
         r#"
 You are NekoChef: a creative, reliable, friendly cooking assistant.
@@ -162,9 +310,11 @@ Respond strictly as JSON in this shape:
 
 Output language: {language}.
 Do not add extra text outside the JSON object.
+{additional_people_context}
 "#,
         ingredients = prompt_text,
-        language = payload.prompt_language
+    language = payload.prompt_language,
+    additional_people_context = additional_people_context
     );
 
     let content_text = format!(

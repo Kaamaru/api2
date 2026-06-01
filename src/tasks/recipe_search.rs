@@ -131,8 +131,8 @@ async fn save_ingredients_to_grocery(
         let item_id = format!("item_{}", uuid::Uuid::new_v4().simple());
         let (quantity, unit) = parse_quantity_unit(amount_raw);
 
-        let patch_url = format!(
-            "{}/users/{}?updateMask.fieldPaths=grocery.{}.items.{}",
+        let post_url = format!(
+            "{}/users/{}/grocery/{}/items?documentId={}",
             firebase_config.firestore_url(),
             userid,
             list_id,
@@ -141,39 +141,15 @@ async fn save_ingredients_to_grocery(
 
         let payload = serde_json::json!({
             "fields": {
-                "grocery": {
-                    "mapValue": {
-                        "fields": {
-                            list_id: {
-                                "mapValue": {
-                                    "fields": {
-                                        "items": {
-                                            "mapValue": {
-                                                "fields": {
-                                                    item_id.clone(): {
-                                                        "mapValue": {
-                                                            "fields": {
-                                                                "uid": { "stringValue": item_id.clone() },
-                                                                "name": { "stringValue": ingredient_name },
-                                                                "quantity": { "stringValue": quantity },
-                                                                "unit": { "stringValue": unit },
-                                                                "checked": { "booleanValue": false }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+                "uid": { "stringValue": item_id.clone() },
+                "name": { "stringValue": ingredient_name },
+                "quantity": { "stringValue": quantity },
+                "unit": { "stringValue": unit },
+                "checked": { "booleanValue": false }
             }
         });
 
-        let response = client.patch(&patch_url).json(&payload).send().await?;
+        let response = client.post(&post_url).json(&payload).send().await?;
         if response.status().is_success() {
             saved_count += 1;
         } else {
@@ -395,7 +371,7 @@ pub async fn add_recipe_info_to_list_handler(
     );
 
     let create_url = format!(
-        "{}/users/{}?updateMask.fieldPaths=grocery.{}",
+        "{}/users/{}/grocery?documentId={}",
         state.firebase_config.firestore_url(),
         payload.userid,
         list_id
@@ -403,25 +379,12 @@ pub async fn add_recipe_info_to_list_handler(
 
     let create_payload = serde_json::json!({
         "fields": {
-            "grocery": {
-                "mapValue": {
-                    "fields": {
-                        list_id.clone(): {
-                            "mapValue": {
-                                "fields": {
-                                    "list_name": { "stringValue": list_name.clone() },
-                                    "items": { "mapValue": { "fields": {} } }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            "list_name": { "stringValue": list_name.clone() }
         }
     });
 
     let client = reqwest::Client::new();
-    let create_response = match client.patch(&create_url).json(&create_payload).send().await {
+    let create_response = match client.post(&create_url).json(&create_payload).send().await {
         Ok(response) => response,
         Err(e) => {
             eprintln!("⚠️ Failed to create grocery list from recipe info: {}", e);

@@ -1,4 +1,7 @@
+use std::time::Duration;
+
 use crate::firebase::{FirebaseConfig, GeminiConfig};
+use crate::tasks::classify_mock::{local_classify_payload, simulated_classify_delay_ms};
 use crate::structures::models::{
     ChatRequest, ClassifyResponse, GeminiContent, GeminiPart, GeminiRequest, GeminiResponse,
     GenerationConfig, InlineImageData, SystemInstruction, PeopleContextItem,
@@ -480,11 +483,16 @@ pub async fn classify_image_handler(
     // Extract and validate image from multipart form
     let mut image_bytes = Vec::new();
     let mut mime_type = String::new();
+    let mut original_file_name = String::new();
 
     while let Some(field) = multipart.next_field().await.map_err(|_| StatusCode::BAD_REQUEST)? {
         let field_name = field.name().unwrap_or("").to_string();
-        
+
         if field_name == "image" {
+            if let Some(file_name) = field.file_name() {
+                original_file_name = file_name.to_string();
+            }
+
             if let Some(content_type_str) = field.content_type() {
                 mime_type = content_type_str.to_string();
             }
@@ -507,6 +515,78 @@ pub async fn classify_image_handler(
     if image_bytes.is_empty() {
         eprintln!("No image provided in multipart form");
         return Err(StatusCode::BAD_REQUEST);
+    }
+
+    if let Some(local_payload) = local_classify_payload(&original_file_name) {
+        let delay_ms = simulated_classify_delay_ms(&original_file_name);
+        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+
+        let response: ClassifyResponse = serde_json::from_value(local_payload.clone()).map_err(|e| {
+            eprintln!("Failed to parse local classification payload: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+        if response.dish_name.eq_ignore_ascii_case("No Food Detected") || response.ingredients.is_empty() {
+            return Ok(ResponseJson(response));
+        }
+
+        let firebase_config = FirebaseConfig::from_env();
+        let generic_name = local_payload
+            .get("genericName")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| response.dish_name.clone());
+
+        let mut nutrients = response.nutrients.clone().unwrap_or_default();
+        if let Some(calories) = &response.calories {
+            if !calories.trim().is_empty() {
+                nutrients.insert("calories".to_string(), calories.clone());
+            }
+        }
+
+        let aliases = if generic_name != response.dish_name {
+            vec![
+                response.dish_name.to_lowercase().replace(' ', ""),
+                generic_name.to_lowercase().replace(' ', ""),
+            ]
+        } else {
+            vec![generic_name.to_lowercase().replace(' ', "")]
+        };
+
+        let recipe_id = match insert_recipe(
+            &firebase_config,
+            generic_name.clone(),
+            response.ingredients.clone(),
+            response.calories.clone(),
+            Some(nutrients),
+            aliases.clone(),
+        )
+        .await
+        {
+            Ok(id) => id,
+            Err(e) => {
+                eprintln!("⚠️ classify save: failed to insert recipe '{}': {}", generic_name, e);
+                return Ok(ResponseJson(response));
+            }
+        };
+
+        let normalized = generic_name.to_lowercase().replace(' ', "");
+        if let Err(e) = insert_dishname(
+            &firebase_config,
+            recipe_id.clone(),
+            generic_name.clone(),
+            normalized,
+            aliases,
+        )
+        .await
+        {
+            eprintln!("⚠️ classify save: failed to insert dishname for '{}': {}", generic_name, e);
+        } else {
+            eprintln!("✅ classify local cache: recipe persisted '{}', recipe_id='{}'", generic_name, recipe_id);
+        }
+
+        return Ok(ResponseJson(response));
     }
 
     // Preprocess image before base64 to reduce payload and token pressure.
@@ -814,3 +894,4 @@ fn preprocess_image_for_gemini(image_bytes: &[u8], original_mime_type: &str) -> 
 
     (compressed, "image/jpeg".to_string())
 }
+

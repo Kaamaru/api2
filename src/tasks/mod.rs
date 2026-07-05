@@ -1,4 +1,5 @@
 pub mod basic;
+pub mod classify_mock;
 pub mod firestore;
 pub mod gemini;
 pub mod getimage;

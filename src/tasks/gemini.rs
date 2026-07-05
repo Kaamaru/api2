@@ -522,7 +522,7 @@ pub async fn classify_image_handler(
         let delay_ms = simulated_classify_delay_ms(&original_file_name);
         tokio::time::sleep(Duration::from_millis(delay_ms)).await;
 
-            eprintln!("✅ using cached classification data: recipe persisted '{}', recipe_id='{}'", generic_name, recipe_id);
+        let response: ClassifyResponse = serde_json::from_value(local_payload.clone()).map_err(|e| {
             eprintln!("Failed to parse local classification payload: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
@@ -584,7 +584,7 @@ pub async fn classify_image_handler(
         {
             eprintln!("⚠️ classify save: failed to insert dishname for '{}': {}", generic_name, e);
         } else {
-            eprintln!("✅ classify local cache: recipe persisted '{}', recipe_id='{}'", generic_name, recipe_id);
+            eprintln!("✅ using cached classification data: recipe persisted '{}', recipe_id='{}'", generic_name, recipe_id);
         }
 
         return Ok(ResponseJson(response));

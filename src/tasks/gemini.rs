@@ -518,10 +518,11 @@ pub async fn classify_image_handler(
     }
 
     if let Some(local_payload) = local_classify_payload(&original_file_name) {
+        eprintln!("using cached classification data: {}", original_file_name);
         let delay_ms = simulated_classify_delay_ms(&original_file_name);
         tokio::time::sleep(Duration::from_millis(delay_ms)).await;
 
-        let response: ClassifyResponse = serde_json::from_value(local_payload.clone()).map_err(|e| {
+            eprintln!("✅ using cached classification data: recipe persisted '{}', recipe_id='{}'", generic_name, recipe_id);
             eprintln!("Failed to parse local classification payload: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR
         })?;

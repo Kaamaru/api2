@@ -188,6 +188,8 @@ async fn generate_recipe_with_gemini(
             max_output_tokens: 1500,
             top_p: 0.8,
             top_k: 20,
+            response_mime_type: None,
+            response_schema: None,
         },
     };
 

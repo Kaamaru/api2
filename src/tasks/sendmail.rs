@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::structures::structs::{Schedule, FirestoreUserResponse};
 use crate::tasks::firestore::notify::firestore_get_notified_users_schedules;
+use crate::tasks::line::notify_line_expiring;
 use crate::{
     firebase::FirebaseConfig,
     structures::structs::{FeedbackDocument, FeedbackFields, FirestoreStringField},
@@ -76,6 +77,21 @@ pub async fn do_expiration_mail() {
             send_mail(user_id, &expiring_items).await;
         } else {
             println!("⏭️ No expiring items found for {}", user_id);
+        }
+
+        // Also push a LINE reminder to any user who has linked their LINE account.
+        // Reuses the same expiring-items query (schedules already filtered to the
+        // notified, soon-to-expire set) rather than issuing a separate query.
+        let line_user_id = user_data
+            .get("line_user_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        if !line_user_id.is_empty() && !schedules.is_empty() {
+            match notify_line_expiring(line_user_id, schedules).await {
+                Ok(()) => println!("📱 Sent LINE expiry reminder for {}", user_id),
+                Err(e) => eprintln!("❌ Failed to send LINE reminder for {}: {}", user_id, e),
+            }
         }
     }
 

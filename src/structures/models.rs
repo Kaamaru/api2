@@ -45,6 +45,12 @@ pub struct GenerationConfig {
     pub top_p: f32,
     #[serde(rename = "topK")]
     pub top_k: u32,
+    /// Forces Gemini to return a specific MIME type (e.g. "application/json").
+    #[serde(rename = "responseMimeType", skip_serializing_if = "Option::is_none")]
+    pub response_mime_type: Option<String>,
+    /// OpenAPI-subset schema that constrains the structured JSON output.
+    #[serde(rename = "responseSchema", skip_serializing_if = "Option::is_none")]
+    pub response_schema: Option<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -123,6 +129,48 @@ pub struct ClassifyResponse {
 #[derive(Deserialize, Debug)]
 pub struct SearchQuery {
     pub name: String,
+}
+
+/// Raw per-item shape returned by Gemini Vision for batch inventory detection.
+/// Matches the responseSchema sent in the request. Expiry is intentionally NOT
+/// requested from the model — it is computed server-side from shelf_life_days().
+#[derive(Deserialize, Debug, Clone)]
+pub struct GeminiBatchItem {
+    #[serde(default)]
+    pub name_th: String,
+    #[serde(default)]
+    pub name_en: String,
+    #[serde(default)]
+    pub category: String,
+    #[serde(default)]
+    pub estimated_quantity: String,
+    #[serde(default)]
+    pub unit: String,
+    #[serde(default)]
+    pub confidence: f32,
+}
+
+/// A single draft inventory item returned to the frontend review table.
+/// Not persisted to Firestore — the user confirms/edits first.
+#[derive(Serialize, Debug, Clone)]
+pub struct BatchDetectItem {
+    pub name_th: String,
+    pub name_en: String,
+    pub category: String,
+    pub estimated_quantity: String,
+    pub unit: String,
+    pub confidence: f32,
+    /// Server-computed expiry (YYYY-MM-DD) = today + shelf_life_days(category).
+    pub suggested_expiry: String,
+    /// 0-based index of the uploaded image this item was detected in.
+    pub source_image_index: usize,
+}
+
+/// Response for POST /batch-detect: the draft list the user will review.
+#[derive(Serialize, Debug)]
+pub struct BatchDetectResponse {
+    pub items: Vec<BatchDetectItem>,
+    pub image_count: usize,
 }
 
 /// JSON body for explicit recipe generation endpoint

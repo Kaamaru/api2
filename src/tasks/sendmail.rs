@@ -98,7 +98,7 @@ pub async fn do_expiration_mail() {
     println!("✅ Expiration mail check completed!");
 }
 
-async fn send_mail(target: &str, expiring_items: &[Value]) {
+pub(crate) async fn send_mail(target: &str, expiring_items: &[Value]) {
     println!("✉️ Preparing to send email to {}", target);
     let my_email = match env::var("COOKFETCH_NOTIFY_USERNAME") {
         Ok(email) => email,

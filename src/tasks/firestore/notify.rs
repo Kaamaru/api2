@@ -254,6 +254,15 @@ pub async fn firestore_get_notified_users_schedules() -> Result<Vec<serde_json::
             None => continue,
         };
 
+        // LINE user id (if the user has linked their account) for push notifications.
+        let line_user_id = user_doc
+            .get("fields")
+            .and_then(|f| f.get("line_user_id"))
+            .and_then(|v| v.get("stringValue"))
+            .and_then(|s| s.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+
         let schedules = fetch_user_schedules(&client, &firebase_config, &uid).await?;
         let mut schedule_list: Vec<Schedule> = Vec::new();
 
@@ -281,6 +290,8 @@ pub async fn firestore_get_notified_users_schedules() -> Result<Vec<serde_json::
         if !schedule_list.is_empty() {
             users_with_notified.push(json!({
                 "user_id": user_id,
+                "uid": uid,
+                "line_user_id": line_user_id,
                 "schedules": schedule_list,
             }));
         }

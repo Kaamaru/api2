@@ -24,11 +24,13 @@ mod structures {
 
 mod tasks {
     pub mod basic;
+    pub mod batch_detect;
     pub mod classify_mock;
     pub mod firestore;
     pub mod gemini;
     pub mod getimage;
     pub mod hardware;
+    pub mod line;
     pub mod sendmail;
     pub mod timecheck;
     pub mod recipe_search;
@@ -47,10 +49,12 @@ mod tests {
 use crate::{
     tasks::{
         basic,
+        batch_detect::batch_detect_handler,
         firestore::{firestore::*, household::*, household_extended::*, modify::*, notify::*, grocery::*, people::*, recipe::*},
         gemini::*,
         getimage::*,
         hardware::{device::*, tractor::tract_test,requests::*},
+        line::{generate_link_code_handler, line_status_handler, line_webhook_handler},
         timecheck,
         recipe_search::{
             AppState, add_recipe_info_to_list_handler, add_recipe_to_list_handler, generate_recipe_handler,
@@ -176,6 +180,11 @@ async fn main() {
         .route("/{household_id}/grocery/{list_id}/items", post(add_household_grocery_item))
         .route("/{household_id}/grocery/{list_id}/items/{item_id}", patch(update_household_grocery_item).delete(delete_household_grocery_item));
 
+    let line = Router::new()
+        .route("/link-code", post(generate_link_code_handler))
+        .route("/status/{userid}", get(line_status_handler))
+        .route("/webhook", post(line_webhook_handler));
+
     let search = Router::new()
         .route("/recipes", get(search_recipe_handler))
         .route("/recipes/{id}", get(get_recipe_by_id_handler))
@@ -188,6 +197,7 @@ async fn main() {
         .route("/", get(handle_get).post(handle_post))
         .route("/chat", post(chat_handler_with_retry))
         .route("/classify", post(classify_image_handler))
+        .route("/batch-detect", post(batch_detect_handler))
         .route("/user/{uid}", get(handle_get_user_by_uid))
         .route("/data", get(handle_get_data))
     .route("/echo", get(async move ||{ println!("echo!");"Echo!"}))
@@ -202,6 +212,7 @@ async fn main() {
         .nest("/people", people)
         .nest("/households", households)
         .nest("/hardware", hardware)
+        .nest("/line", line)
         .nest("/search", search)
         .layer(cors)
         .with_state(firebase_config);

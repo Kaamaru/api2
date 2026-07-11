@@ -352,6 +352,8 @@ Do not add extra text outside the JSON object.
             max_output_tokens: token_limit as u32,
             top_p: 0.8,
             top_k: 40,
+            response_mime_type: None,
+            response_schema: None,
         },
     };
 
@@ -665,6 +667,8 @@ Be concise. Include calories per serving and nutrient breakdown. Respond ONLY wi
             max_output_tokens: 2500,
             top_p: 0.8,
             top_k: 40,
+            response_mime_type: None,
+            response_schema: None,
         },
     };
 
@@ -829,7 +833,7 @@ Be concise. Include calories per serving and nutrient breakdown. Respond ONLY wi
 }
 
 /// Helper: Encode bytes to base64
-fn base64_encode(data: &[u8]) -> String {
+pub(crate) fn base64_encode(data: &[u8]) -> String {
     const BASE64_CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut result = String::new();
     
@@ -860,7 +864,7 @@ fn base64_encode(data: &[u8]) -> String {
 }
 
 /// Resize and compress image for Gemini vision calls.
-fn preprocess_image_for_gemini(image_bytes: &[u8], original_mime_type: &str) -> (Vec<u8>, String) {
+pub(crate) fn preprocess_image_for_gemini(image_bytes: &[u8], original_mime_type: &str) -> (Vec<u8>, String) {
     const MAX_DIMENSION: u32 = 1024;
     const JPEG_QUALITY: u8 = 78;
 

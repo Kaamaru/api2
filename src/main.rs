@@ -152,6 +152,7 @@ async fn main() {
         .route("/on/{uuid}/{schedule_id}", patch(firestore_set_notify_on))
         .route("/off/{uuid}/{schedule_id}", patch(firestore_set_notify_off))
         .route("/get_notify/{uuid}", get(firestore_get_notify_schedule_all))
+        .route("/test/{uid}", post(firestore_test_notification))
         // .route("/get_user_notify", get(firestore_get_notified_users_schedules));
         ;
 

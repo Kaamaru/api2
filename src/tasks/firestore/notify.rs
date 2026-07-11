@@ -299,3 +299,116 @@ pub async fn firestore_get_notified_users_schedules() -> Result<Vec<serde_json::
 
     Ok(users_with_notified)
 }
+
+/// Parse a schedule expiry string (RFC3339 or YYYY-MM-DD) into days-from-now.
+fn days_until_expiry(expiry: &str) -> Option<i64> {
+    let now = chrono::Utc::now();
+    if let Ok(date) = chrono::DateTime::parse_from_rfc3339(expiry) {
+        Some((date.with_timezone(&chrono::Utc) - now).num_days())
+    } else if let Ok(date) = chrono::NaiveDate::parse_from_str(expiry, "%Y-%m-%d") {
+        let dt = chrono::Utc.from_utc_datetime(&chrono::NaiveDateTime::new(
+            date,
+            chrono::NaiveTime::from_hms_opt(0, 0, 0)?,
+        ));
+        Some((dt - now).num_days())
+    } else {
+        None
+    }
+}
+
+/// POST /notify/test/{uid}
+///
+/// Immediately sends a notification to the given user via every channel they
+/// have configured (email + LINE), using their soon-to-expire items. If they
+/// have no expiring items, a synthetic test item is sent so delivery can still
+/// be verified. Intended for manual testing from the app.
+pub async fn firestore_test_notification(
+    Path(uid): Path<String>,
+    State(firebase_config): State<FirebaseConfig>,
+) -> impl IntoResponse {
+    let client = Client::new();
+
+    // Resolve the user document for email + line_user_id.
+    let user_url = format!("{}/users/{}", firebase_config.firestore_url(), uid);
+    let user_doc: Value = match client.get(&user_url).send().await {
+        Ok(r) if r.status().is_success() => r.json().await.unwrap_or_else(|_| json!({})),
+        _ => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "User not found" })),
+            )
+                .into_response();
+        }
+    };
+
+    let get_field = |key: &str| {
+        user_doc
+            .get("fields")
+            .and_then(|f| f.get(key))
+            .and_then(|v| v.get("stringValue"))
+            .and_then(|s| s.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    let email = get_field("email");
+    let line_user_id = get_field("line_user_id");
+    let any_channel = !email.is_empty() || !line_user_id.is_empty();
+
+    // Collect the user's items expiring within a week (any notify flag), so the
+    // test reflects real content when available.
+    let schedules = fetch_user_schedules(&client, &firebase_config, &uid)
+        .await
+        .unwrap_or_default();
+
+    let mut items: Vec<Value> = schedules
+        .iter()
+        .filter(|s| {
+            days_until_expiry(&s.expiry)
+                .map(|d| d >= 0 && d <= 7)
+                .unwrap_or(false)
+        })
+        .filter_map(|s| serde_json::to_value(s).ok())
+        .collect();
+
+    let used_test_item = items.is_empty();
+    if used_test_item {
+        items.push(json!({
+            "name": "CookFetch test item",
+            "expiry": chrono::Utc::now().format("%Y-%m-%d").to_string(),
+            "category": "Test",
+            "date": "",
+            "time": "",
+        }));
+    }
+
+    // Email channel.
+    let email_result = if email.is_empty() {
+        json!({ "attempted": false, "reason": "no email on account" })
+    } else {
+        crate::tasks::sendmail::send_mail(&email, &items).await;
+        json!({ "attempted": true, "to": email })
+    };
+
+    // LINE channel.
+    let line_result = if line_user_id.is_empty() {
+        json!({ "attempted": false, "reason": "LINE not linked" })
+    } else {
+        match crate::tasks::line::notify_line_expiring(&line_user_id, &items).await {
+            Ok(()) => json!({ "attempted": true, "ok": true }),
+            Err(e) => json!({ "attempted": true, "ok": false, "error": e }),
+        }
+    };
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "success": true,
+            "item_count": items.len(),
+            "used_test_item": used_test_item,
+            "any_channel": any_channel,
+            "email": email_result,
+            "line": line_result,
+        })),
+    )
+        .into_response()
+}
